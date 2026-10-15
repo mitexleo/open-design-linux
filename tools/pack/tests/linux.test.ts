@@ -54,16 +54,20 @@ vi.mock("@open-design/sidecar", async (importOriginal) => {
 });
 
 import type { ToolPackConfig } from "@/config/index.js";
+import { linuxResources } from "@/resources/index.js";
 import {
   buildDockerArgs,
   cleanupPackedLinuxNamespace,
+  collectBuiltLinuxArtifacts,
   createLinuxDesktopLaunchEnv,
   inspectPackedLinuxApp,
   LINUX_APPIMAGE_EXECUTABLE_ARGS,
   matchesAppImageProcess,
   renderDesktopTemplate,
+  renderFlatpakManifest,
   renderLinuxAppImageAppRun,
   renderLinuxPackagedMainEntry,
+  resolveLinuxElectronBuilderTargets,
   resolveLinuxLifecycleMode,
   resolveProductionInstallCommand,
   shouldRejectLinuxHeadlessInspectOptions,
@@ -658,6 +662,75 @@ describe("renderLinuxPackagedMainEntry", () => {
 describe("LINUX_APPIMAGE_EXECUTABLE_ARGS", () => {
   it("keeps the AppImage no-sandbox fallback explicit for constrained Linux hosts", () => {
     expect([...LINUX_APPIMAGE_EXECUTABLE_ARGS]).toEqual(["--no-sandbox"]);
+  });
+});
+
+describe("resolveLinuxElectronBuilderTargets", () => {
+  it("maps each Linux --to target to its electron-builder target list", () => {
+    expect(resolveLinuxElectronBuilderTargets("dir")).toEqual(["dir"]);
+    expect(resolveLinuxElectronBuilderTargets("appimage")).toEqual(["AppImage"]);
+    expect(resolveLinuxElectronBuilderTargets("deb")).toEqual(["deb"]);
+    expect(resolveLinuxElectronBuilderTargets("rpm")).toEqual(["rpm"]);
+    expect(resolveLinuxElectronBuilderTargets("all")).toEqual(["AppImage", "deb", "rpm"]);
+  });
+
+  it("builds the unpacked dir output for flatpak, which electron-builder cannot target natively", () => {
+    expect(resolveLinuxElectronBuilderTargets("flatpak")).toEqual(["dir"]);
+  });
+});
+
+describe("renderFlatpakManifest", () => {
+  it("substitutes every @@TOKEN@@ placeholder", () => {
+    const out = renderFlatpakManifest(
+      "app-id: @@APP_ID@@\n# @@VERSION@@\nexec @@EXECUTABLE@@ @@SOURCE@@",
+      {
+        appId: "io.open-design.OpenDesign",
+        executable: "Open Design",
+        source: "/out/linux-unpacked",
+        version: "0.25.0",
+      },
+    );
+
+    expect(out).toContain("app-id: io.open-design.OpenDesign");
+    expect(out).toContain("# 0.25.0");
+    expect(out).toContain("exec Open Design /out/linux-unpacked");
+    expect(out).not.toMatch(/@@[A-Z_]+@@/);
+  });
+
+  it("renders the shipped manifest template with no leftover tokens", () => {
+    const template = readFileSync(linuxResources.flatpakManifest, "utf8");
+    const out = renderFlatpakManifest(template, {
+      appId: "io.open-design.OpenDesign",
+      executable: "Open Design",
+      source: "/out/linux-unpacked",
+      version: "0.25.0",
+    });
+
+    expect(out).toContain("app-id: io.open-design.OpenDesign");
+    expect(out).not.toMatch(/@@[A-Z_]+@@/);
+  });
+});
+
+describe("collectBuiltLinuxArtifacts", () => {
+  it("discovers AppImage, deb, and rpm artifacts in the builder output root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "od-linux-artifacts-"));
+    try {
+      await writeFile(join(root, "Open Design-default.AppImage"), "");
+      await writeFile(join(root, "Open Design-default.deb"), "");
+      await writeFile(join(root, "Open Design-default.rpm"), "");
+
+      const artifacts = await collectBuiltLinuxArtifacts(root);
+      expect(artifacts.appImage).toBe(join(root, "Open Design-default.AppImage"));
+      expect(artifacts.deb).toBe(join(root, "Open Design-default.deb"));
+      expect(artifacts.rpm).toBe(join(root, "Open Design-default.rpm"));
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("returns nulls when the builder output root does not exist", async () => {
+    const artifacts = await collectBuiltLinuxArtifacts("/work/does-not-exist-builder");
+    expect(artifacts).toEqual({ appImage: null, deb: null, rpm: null });
   });
 });
 

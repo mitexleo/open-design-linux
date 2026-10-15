@@ -581,8 +581,32 @@ async function writeLinuxAppImageAppRun(paths: LinuxPaths): Promise<void> {
 
 // --- Step 5: writeLinuxBuilderConfig helper ---
 
+// Maps the tools-pack `--to` target to electron-builder's Linux target list.
+// `all` covers the formats electron-builder builds natively in one pass;
+// `flatpak` builds the unpacked `dir` output that flatpak-builder consumes,
+// because electron-builder has no flatpak target of its own.
+export function resolveLinuxElectronBuilderTargets(to: ToolPackConfig["to"]): string[] {
+  switch (to) {
+    case "dir":
+      return ["dir"];
+    case "appimage":
+      return ["AppImage"];
+    case "deb":
+      return ["deb"];
+    case "rpm":
+      return ["rpm"];
+    case "flatpak":
+      return ["dir"];
+    case "all":
+      return ["AppImage", "deb", "rpm"];
+    default:
+      return ["AppImage"];
+  }
+}
+
 async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
-  const target = config.to === "dir" ? ["dir"] : ["AppImage"];
+  const targets = resolveLinuxElectronBuilderTargets(config.to);
+  const includesAppImage = targets.includes("AppImage");
   const namespaceToken = sanitizeNamespace(config.namespace);
   const packagedVersion = await readPackagedVersion(config);
   const packageVersion = electronBuilderVersionForAppVersion(packagedVersion);
@@ -617,25 +641,43 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
       // process.resourcesPath by the desktop main at runtime).
       domToPptxBundleResource(config),
     ],
-    ...(config.to === "dir"
-      ? {}
-      : {
+    // AppRun is AppImage-only glue; deb/rpm/dir outputs must not carry it.
+    ...(includesAppImage
+      ? {
           extraFiles: [
             {
               from: paths.appImageAppRunPath,
               to: "AppRun",
             },
           ],
-        }),
+        }
+      : {}),
     files: ["**/*", "!**/node_modules/.bin", "!**/node_modules/electron{,/**/*}"],
     icon: linuxResources.icon,
     linux: {
-      target,
+      target: targets,
       icon: linuxResources.icon,
       category: "Development",
       synopsis: "Open Design",
       maintainer: "Open Design Contributors",
     },
+    // `all` also emits native .deb/.rpm packages. electron-builder supplies the
+    // Electron runtime's default dependency set, so we only pin the section/
+    // group here rather than replacing `depends` (which would drop those libs).
+    ...(targets.includes("deb")
+      ? {
+          deb: {
+            category: "Development",
+          },
+        }
+      : {}),
+    ...(targets.includes("rpm")
+      ? {
+          rpm: {
+            category: "Development",
+          },
+        }
+      : {}),
     // Keep the AppImage launch fallback explicit. Our top-level AppRun wrapper
     // clears ELECTRON_RUN_AS_NODE before these Chromium flags reach Electron,
     // including for AppImageLauncher-generated desktop entries.
@@ -651,7 +693,7 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
   await writeFile(paths.appBuilderConfigPath, `${JSON.stringify(builderConfig, null, 2)}\n`, "utf8");
 }
 
-// --- Step 6: runElectronBuilderLinux + findBuiltAppImage helpers ---
+// --- Step 6: runElectronBuilderLinux + built-artifact helpers ---
 
 async function runElectronBuilderLinux(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
   await rm(paths.appBuilderOutputRoot, { force: true, recursive: true });
@@ -671,19 +713,110 @@ async function runElectronBuilderLinux(config: ToolPackConfig, paths: LinuxPaths
   });
 }
 
+async function findBuiltLinuxArtifact(outputRoot: string, extension: string): Promise<string | null> {
+  if (!(await pathExists(outputRoot))) return null;
+  const entries = await readdir(outputRoot);
+  const match = entries.find((entry) => entry.endsWith(extension));
+  return match ? join(outputRoot, match) : null;
+}
+
+export type LinuxBuiltArtifacts = {
+  appImage: string | null;
+  deb: string | null;
+  rpm: string | null;
+};
+
+export async function collectBuiltLinuxArtifacts(outputRoot: string): Promise<LinuxBuiltArtifacts> {
+  return {
+    appImage: await findBuiltLinuxArtifact(outputRoot, ".AppImage"),
+    deb: await findBuiltLinuxArtifact(outputRoot, ".deb"),
+    rpm: await findBuiltLinuxArtifact(outputRoot, ".rpm"),
+  };
+}
+
 async function findBuiltAppImage(paths: LinuxPaths): Promise<string | null> {
-  if (!(await pathExists(paths.appBuilderOutputRoot))) return null;
-  const entries = await readdir(paths.appBuilderOutputRoot);
-  const appImage = entries.find((entry) => entry.endsWith(".AppImage"));
-  return appImage ? join(paths.appBuilderOutputRoot, appImage) : null;
+  return await findBuiltLinuxArtifact(paths.appBuilderOutputRoot, ".AppImage");
+}
+
+// --- Flatpak: electron-builder has no flatpak target, so flatpak-builder
+// consumes the unpacked `dir` output electron-builder already produced. ---
+
+const LINUX_UNPACKED_DIR_NAME = "linux-unpacked";
+const FLATPAK_APP_ID = "io.open-design.OpenDesign";
+
+export type FlatpakManifestValues = {
+  appId: string;
+  executable: string;
+  source: string;
+  version: string;
+};
+
+export function renderFlatpakManifest(template: string, values: FlatpakManifestValues): string {
+  return template
+    .replace(/@@APP_ID@@/g, values.appId)
+    .replace(/@@EXECUTABLE@@/g, values.executable)
+    .replace(/@@SOURCE@@/g, values.source)
+    .replace(/@@VERSION@@/g, values.version);
+}
+
+async function assertFlatpakBuilderAvailable(): Promise<void> {
+  if (!(await commandExists("flatpak-builder"))) {
+    throw new Error(
+      "tools-pack linux build --to flatpak requires flatpak-builder. Install it (e.g. `sudo apt install flatpak-builder` or `sudo dnf install flatpak-builder`) and add the org.freedesktop.Platform/Sdk runtimes from Flathub.",
+    );
+  }
+}
+
+async function buildLinuxFlatpak(config: ToolPackConfig, paths: LinuxPaths): Promise<string> {
+  await assertFlatpakBuilderAvailable();
+
+  const unpackedRoot = join(paths.appBuilderOutputRoot, LINUX_UNPACKED_DIR_NAME);
+  if (!(await pathExists(unpackedRoot))) {
+    throw new Error(`tools-pack: expected unpacked Electron output at ${unpackedRoot}`);
+  }
+
+  const packagedVersion = await readPackagedVersion(config);
+  const flatpakRoot = join(paths.appBuilderOutputRoot, "flatpak");
+  const manifestPath = join(flatpakRoot, `${FLATPAK_APP_ID}.yml`);
+  const repoRoot = join(flatpakRoot, "repo");
+  const buildRoot = join(flatpakRoot, "build");
+  await mkdir(flatpakRoot, { recursive: true });
+
+  const template = await readFile(linuxResources.flatpakManifest, "utf8");
+  const manifest = renderFlatpakManifest(template, {
+    appId: FLATPAK_APP_ID,
+    executable: PRODUCT_NAME,
+    source: unpackedRoot,
+    version: packagedVersion,
+  });
+  await writeFile(manifestPath, manifest, "utf8");
+
+  await execFileAsync(
+    "flatpak-builder",
+    ["--force-clean", `--repo=${repoRoot}`, buildRoot, manifestPath],
+    { cwd: flatpakRoot, env: process.env },
+  );
+
+  const bundlePath = join(
+    paths.appBuilderOutputRoot,
+    `${APP_IMAGE_PRODUCT_NAME}.${sanitizeNamespace(config.namespace)}.flatpak`,
+  );
+  await execFileAsync("flatpak", ["build-bundle", repoRoot, bundlePath, FLATPAK_APP_ID], {
+    cwd: flatpakRoot,
+    env: process.env,
+  });
+  return bundlePath;
 }
 
 // --- Step 7: packLinux orchestrator + result type + stub for runBuildInContainer ---
 
 export type LinuxPackResult = {
   appImagePath: string | null;
+  debPath: string | null;
+  flatpakPath: string | null;
   outputRoot: string;
   resourceRoot: string;
+  rpmPath: string | null;
   runtimeNamespaceRoot: string;
   to: ToolPackConfig["to"];
   containerized: boolean;
@@ -691,13 +824,21 @@ export type LinuxPackResult = {
 
 export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult> {
   if (config.containerized) {
+    if (config.to === "flatpak") {
+      throw new Error(
+        "tools-pack linux build --to flatpak cannot run with --containerized: flatpak-builder is not present in the electronuserland/builder image. Run the flatpak build on the host instead.",
+      );
+    }
     await runBuildInContainer(config);
     const paths = resolveLinuxPaths(config);
-    const appImagePath = config.to === "dir" ? null : await findBuiltAppImage(paths);
+    const artifacts = await collectBuiltLinuxArtifacts(paths.appBuilderOutputRoot);
     return {
-      appImagePath,
+      appImagePath: artifacts.appImage,
+      debPath: artifacts.deb,
+      flatpakPath: null,
       outputRoot: paths.appBuilderOutputRoot,
       resourceRoot: paths.resourceRoot,
+      rpmPath: artifacts.rpm,
       runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
       to: config.to,
       containerized: true,
@@ -713,17 +854,22 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   await copyResourceTree(config, paths);
   const tarballs = await collectWorkspaceTarballs(config, paths);
   await writeAssembledApp(config, paths, tarballs);
-  if (config.to !== "dir") {
+  const targets = resolveLinuxElectronBuilderTargets(config.to);
+  if (targets.includes("AppImage")) {
     await writeLinuxAppImageAppRun(paths);
   }
   await writeLinuxBuilderConfig(config, paths);
   await runElectronBuilderLinux(config, paths);
 
-  const appImagePath = config.to === "dir" ? null : await findBuiltAppImage(paths);
+  const artifacts = await collectBuiltLinuxArtifacts(paths.appBuilderOutputRoot);
+  const flatpakPath = config.to === "flatpak" ? await buildLinuxFlatpak(config, paths) : null;
   return {
-    appImagePath,
+    appImagePath: artifacts.appImage,
+    debPath: artifacts.deb,
+    flatpakPath,
     outputRoot: paths.appBuilderOutputRoot,
     resourceRoot: paths.resourceRoot,
+    rpmPath: artifacts.rpm,
     runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
     to: config.to,
     containerized: false,

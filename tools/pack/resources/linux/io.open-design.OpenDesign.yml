@@ -1,0 +1,37 @@
+# Flatpak manifest for Open Design @@VERSION@@.
+# Rendered by tools-pack (`tools/pack/src/linux.ts` -> renderFlatpakManifest):
+#   @@APP_ID@@     reverse-DNS Flatpak app id
+#   @@VERSION@@    packaged app version (informational; the bundle version comes
+#                  from `flatpak build-bundle`)
+#   @@SOURCE@@     absolute path to electron-builder's `linux-unpacked` output
+#   @@EXECUTABLE@@ Electron executable name inside @@SOURCE@@
+app-id: @@APP_ID@@
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: open-design
+separate-locales: false
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  # Projects and host coding-agent CLIs live under the user's home directory.
+  - --filesystem=home
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.portal.*
+modules:
+  - name: open-design
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/open-design /app/bin
+      - cp -a . /app/open-design/
+      # Electron cannot use the Chromium setuid sandbox inside the Flatpak
+      # sandbox, so the launcher passes --no-sandbox.
+      - printf '%s\n' '#!/bin/sh' 'exec "/app/open-design/@@EXECUTABLE@@" --no-sandbox "$@"' > /app/bin/open-design
+      - chmod 0755 /app/bin/open-design
+    sources:
+      - type: dir
+        path: @@SOURCE@@

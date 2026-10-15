@@ -1,0 +1,177 @@
+name: release-linux
+
+# Fork-local Linux packaging lane: builds the desktop app as a `.deb`, `.rpm`,
+# AppImage, and Flatpak bundle, then attaches them to the GitHub Release on this
+# repository. It intentionally does not touch the upstream R2/channel/Feishu
+# release pipeline (`release-stable.yml`, `release-beta.yml`,
+# `release-prerelease.yml`, `tools/release/**`), so this fork stays a thin,
+# rebase-friendly overlay over upstream.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and publish, for example v0.25.0. Must already exist."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build Linux packages and publish
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve release tag and version
+        id: release
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          if [ -z "$tag" ]; then
+            echo "a release tag is required" >&2
+            exit 1
+          fi
+          if [[ "$tag" == v* ]]; then
+            version="${tag#v}"
+          else
+            version="$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Linux release: tag=$tag version=$version"
+
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `--containerized` builds against the electronuserland/builder glibc 2.27
+      # baseline so the packages run on older distros than ubuntu-latest. Docker
+      # ships on GitHub-hosted ubuntu-latest, so no extra setup is needed.
+      - name: Build AppImage, deb, and rpm
+        env:
+          NS: release-linux
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/release-report"
+          mkdir -p "$report_dir"
+          pnpm exec tools-pack linux build \
+            --dir "$RUNNER_TEMP/tools-pack" \
+            --namespace "$NS" \
+            --portable \
+            --app-version "$VERSION" \
+            --to all \
+            --containerized \
+            --json | tee "$report_dir/build-all.json"
+
+      # Flatpak needs flatpak-builder plus the org.freedesktop runtime/sdk, none
+      # of which are in the electronuserland/builder image, so it builds on the
+      # host against the unpacked output electron-builder just produced.
+      - name: Install flatpak toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+
+      # A separate --dir: the flatpak build runs electron-builder's `dir` target,
+      # which clears its output root first, so reusing the AppImage/deb/rpm dir
+      # would wipe those artifacts before they are staged.
+      - name: Build Flatpak bundle
+        env:
+          NS: release-linux
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/release-report"
+          pnpm exec tools-pack linux build \
+            --dir "$RUNNER_TEMP/tools-pack-flatpak" \
+            --namespace "$NS" \
+            --portable \
+            --app-version "$VERSION" \
+            --to flatpak \
+            --json | tee "$report_dir/build-flatpak.json"
+
+      - name: Assemble release assets
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/release-report"
+          asset_dir="$RUNNER_TEMP/release-assets"
+          rm -rf "$asset_dir"
+          mkdir -p "$asset_dir"
+
+          read_artifact() { # json-path key
+            local value
+            value="$(jq -r ".$2" "$1")"
+            if [ -z "$value" ] || [ "$value" = "null" ]; then
+              echo "missing $2 in $1" >&2
+              exit 1
+            fi
+            printf '%s' "$value"
+          }
+
+          appimage="$(read_artifact "$report_dir/build-all.json" appImagePath)"
+          deb="$(read_artifact "$report_dir/build-all.json" debPath)"
+          rpm="$(read_artifact "$report_dir/build-all.json" rpmPath)"
+          flatpak="$(read_artifact "$report_dir/build-flatpak.json" flatpakPath)"
+
+          stage() { # source destination-name
+            cp "$1" "$asset_dir/$2"
+            ( cd "$asset_dir" && sha256sum "$2" > "$2.sha256" )
+          }
+
+          stage "$appimage" "open-design-${VERSION}-linux-x64.AppImage"
+          stage "$deb" "open-design-${VERSION}-linux-x64.deb"
+          stage "$rpm" "open-design-${VERSION}-linux-x64.rpm"
+          stage "$flatpak" "open-design-${VERSION}-linux-x64.flatpak"
+
+          ls -l "$asset_dir"
+
+      - name: Publish to GitHub Release
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset_dir="$RUNNER_TEMP/release-assets"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$asset_dir"/* --clobber
+          else
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Open Design $VERSION" \
+              --generate-notes \
+              "$asset_dir"/*
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name'

@@ -1,0 +1,124 @@
+name: sync-upstream-linux
+
+# Keeps this soft fork in step with upstream and releases a matching Linux build.
+#
+# Every run:
+#   1. resolves the newest stable tag published by upstream (`nexu-io/open-design`),
+#   2. skips when this fork has already released that version,
+#   3. otherwise merges the upstream tag into the fork's tree and pushes a
+#      `v<version>` tag pointing at the merge commit.
+#
+# Pushing that tag is what `release-linux.yml` listens for, so the packages are
+# always built from the upstream version's code plus this fork's Linux packaging
+# delta, and published under the matching version number.
+#
+# Disable the schedule with the repository variable `AUTO_RELEASE_UPSTREAM=false`.
+
+on:
+  schedule:
+    # Every 6 hours.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream version to sync and release, for example 0.26.0. Empty = newest upstream stable tag."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-linux
+  cancel-in-progress: false
+
+jobs:
+  sync-and-release:
+    name: Sync upstream and trigger Linux release
+    if: ${{ vars.AUTO_RELEASE_UPSTREAM != 'false' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REMOTE: https://github.com/nexu-io/open-design.git
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve upstream version
+        id: upstream
+        run: |
+          set -euo pipefail
+          requested="${{ inputs.version }}"
+          if [ -n "$requested" ]; then
+            version="${requested#v}"
+          else
+            version="$(git ls-remote --tags --refs "$UPSTREAM_REMOTE" 'v*' \
+              | awk -F/ '{print $NF}' \
+              | sed 's/^v//' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1)"
+          fi
+          if [ -z "$version" ]; then
+            echo "could not resolve an upstream version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Upstream target: v$version"
+
+      - name: Decide whether a release is needed
+        id: check
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; nothing to do"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists without a release; skipping to avoid clobbering it"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge the upstream tag into the fork
+        if: ${{ steps.check.outputs.needed == 'true' }}
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "open-design-linux automation"
+          git config user.email "actions@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_REMOTE"
+          git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/$TAG"
+          if git merge-base --is-ancestor "$TAG" HEAD; then
+            echo "$TAG is already contained in main"
+          else
+            # A conflict here fails the job loudly and stops the release: we never
+            # publish Linux packages from a half-merged upstream tree.
+            git merge --no-edit "$TAG"
+          fi
+
+      - name: Push the release trigger tag
+        if: ${{ steps.check.outputs.needed == 'true' }}
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Only the tag is pushed, not main. `release-linux.yml` runs on the tag
+          # push and builds/publishes the Linux packages at this version.
+          git push origin "HEAD:refs/tags/$TAG"
+          echo "pushed $TAG; release-linux.yml will build and publish the Linux packages"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Linux soft-fork sync"
+            echo ""
+            echo "- upstream target: \`${{ steps.upstream.outputs.tag }}\`"
+            echo "- action needed: \`${{ steps.check.outputs.needed }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

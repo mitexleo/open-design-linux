@@ -450,6 +450,9 @@ pnpm tools-pack win build --to nsis
 pnpm tools-pack win install
 pnpm tools-pack win cleanup
 pnpm tools-pack linux build --to appimage
+pnpm tools-pack linux build --to deb
+pnpm tools-pack linux build --to rpm
+pnpm tools-pack linux build --to flatpak
 pnpm tools-pack linux install
 pnpm tools-pack linux build --containerized
 ```

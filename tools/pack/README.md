@@ -94,10 +94,13 @@ namespace-local config and runtime paths outside that cache entry.
 
 Local lifecycle commands:
 
-- `tools-pack linux build --to all` (default; produces AppImage)
+- `tools-pack linux build --to all` (default; produces AppImage + `.deb` + `.rpm`)
 - `tools-pack linux build --to appimage` (explicit AppImage)
+- `tools-pack linux build --to deb` (Debian / Ubuntu / Mint / Pop!_OS package)
+- `tools-pack linux build --to rpm` (Fedora / RHEL / openSUSE package)
+- `tools-pack linux build --to flatpak` (Flatpak bundle; requires `flatpak-builder` on the host — see [Flatpak](#flatpak) below)
 - `tools-pack linux build --to dir` (unpacked output for fast iteration)
-- `tools-pack linux build --containerized` (run electron-builder inside `electronuserland/builder:base` Docker for a wider glibc compatibility target — requires Docker)
+- `tools-pack linux build --containerized` (run electron-builder inside `electronuserland/builder:base` Docker for a wider glibc compatibility target — requires Docker; incompatible with `--to flatpak`)
 - `tools-pack linux build --to all --portable` (release artifacts that must not bake local tools-pack runtime paths)
 - `tools-pack linux install`
 - `tools-pack linux install --headless` (install the headless launcher script instead of the AppImage)
@@ -112,6 +115,10 @@ Local lifecycle commands:
 - `tools-pack linux uninstall --headless`
 - `tools-pack linux cleanup`
 - `tools-pack linux cleanup --headless`
+
+`--to all` covers the formats electron-builder builds natively in a single pass (AppImage, `.deb`, `.rpm`). `flatpak` is explicit-only because it needs `flatpak-builder`, which is not present on every build host; folding it into `all` would break plain local builds. `install`/`start`/`stop` remain AppImage- and headless-only; `.deb`/`.rpm`/Flatpak are build-only and install through the distro package manager or Flatpak.
+
+Releasing these packages (and the upstream-tracking automation that builds them) is documented in [`docs/release-linux.md`](../../docs/release-linux.md).
 
 Build artifacts are namespace-scoped under `.tmp/tools-pack/out/linux/namespaces/<namespace>/`. Packaged logs, sidecar runtime, cache, and Electron user-data are namespace-scoped under the tools-pack runtime root. Daemon storage follows only the root `AGENTS.md` **Daemon data directory contract**. Containerized build cache lives under `.tmp/tools-pack/.docker-cache/{electron,electron-builder}/`.
 
@@ -168,16 +175,35 @@ Verified smoke coverage in this repository currently includes:
 - Release lane: Ubuntu GitHub-hosted runner, containerized AppImage build plus Xvfb AppImage runtime smoke when the Linux release lane is enabled.
 - Manual AppImage behavior used to choose `--appimage-extract-and-run`: Ubuntu 24.04 and Arch Linux.
 
-### Format choice: why AppImage first
+### Package formats
 
-Linux desktop apps in this space split across formats: VS Code ships `.deb` + `.rpm` + Snap; Discord ships AppImage + `.deb`; Slack ships `.deb` + `.rpm`; Cursor and Obsidian ship AppImage. We start with AppImage because one artifact can cover the widest glibc-compatible target without distro repositories, store packaging, signing infrastructure, or per-format install scripts, and it integrates cleanly with the namespace-scoped install layout. `.deb` / `.rpm` / Snap / Flatpak can land incrementally when user demand justifies the extra release ownership.
+Linux desktop apps in this space split across formats: VS Code ships `.deb` + `.rpm` + Snap; Discord ships AppImage + `.deb`; Slack ships `.deb` + `.rpm`; Cursor and Obsidian ship AppImage. This fork ships **AppImage + `.deb` + `.rpm` + Flatpak**:
+
+- **AppImage** — one artifact covering the widest glibc-compatible target, no distro repositories required, and it integrates cleanly with the namespace-scoped install layout.
+- **`.deb` / `.rpm`** — native electron-builder targets, so they come for free with the same build. They install through the distro package manager and register `od://` via the packaged desktop entry.
+- **Flatpak** — a sandboxed, distro-agnostic bundle, built by `flatpak-builder` from the unpacked `dir` output (electron-builder has no flatpak target).
+
+### Flatpak
+
+`tools-pack linux build --to flatpak` requires `flatpak-builder` plus the matching `org.freedesktop.Platform` / `org.freedesktop.Sdk` runtimes from Flathub:
+
+```bash
+sudo apt install flatpak flatpak-builder            # Debian / Ubuntu
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+```
+
+The build first produces electron-builder's `linux-unpacked` output, then renders `tools/pack/resources/linux/io.open-design.OpenDesign.yml` (`@@APP_ID@@` / `@@EXECUTABLE@@` / `@@SOURCE@@` / `@@VERSION@@`) and runs `flatpak-builder` + `flatpak build-bundle`. The bundle lands next to the other artifacts as `Open-Design.<namespace>.flatpak`.
+
+**Electron-in-Flatpak caveats:** the Chromium setuid sandbox is unusable inside the Flatpak sandbox, so the generated `/app/bin/open-design` launcher passes `--no-sandbox`. The sandbox also restricts which host coding-agent CLIs the packaged daemon can see; the manifest grants `--filesystem=home` so projects and home-directory CLIs work, but an agent installed elsewhere (e.g. a system path) may need a wider `--filesystem` entry in the manifest.
 
 ### Out of scope (later phases)
 
-- AppImage signing (`--signed`) — deferred pending a GPG key infrastructure decision and a user-facing verification flow design (no ETA).
+- AppImage signing (`--signed`) and `.deb`/`.rpm` repository signing — deferred pending a GPG key infrastructure decision and a user-facing verification flow design (no ETA).
 - AppImage auto-update feed (`latest-linux.yml`) — the linux electron-builder config has no `publish` block wired, so a generated feed would point users at a feed that never updates. Tracked alongside signing.
-- Additional package formats: `.deb`, `.rpm`, Snap, Flatpak — deferred until there is demand and an owner for per-distro metadata, signing/store/repository plumbing, install/remove hooks, and release validation.
-- Full Linux AppImage and headless packaged smoke remain outside the main PR gate; run the applicable tools-pack validation manually or through a release lane when Linux packaging changes.
+- Snap — deferred until there is demand and an owner for store/repository plumbing.
+- apt/dnf repositories and a Flathub listing — this fork publishes `.deb`/`.rpm`/`.flatpak` artifacts to GitHub Releases; hosting them in distro repositories or Flathub is a separate ownership decision.
+- Full Linux AppImage/Flatpak and headless packaged smoke remain outside the main PR gate; run the applicable tools-pack validation manually or through a release lane when Linux packaging changes.
 
 `--to dmg` is manual-install DMG output only. Any builder-generated updater metadata such as `latest-mac.yml` or
 `.blockmap` files is treated as scratch and cleaned from the builder directory; release-beta generates the authoritative

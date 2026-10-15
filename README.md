@@ -1,9 +1,11 @@
 <h1 align="center">OpenDesign: The 1st Collaborative AI Design Agent Workspace</h1>
 
+<h3 align="center">Open source · local-first · native Linux packages — <code>.deb</code>, <code>.rpm</code>, Flatpak, and AppImage</h3>
+
 > ✨ **[Celebrating 100K GitHub stars with OpenDesign Go](https://open-design.ai/pricing/)** — Go credits are doubled: **$8 for your first month, with up to $120 in monthly credits for eligible Design Plan models**. Use them across 10+ models, including GPT-6 Luna, DeepSeek V4.1 Flash, GLM-5.3 Flash-X, and MiMo V2.6 Flash. All personal plans include API access for Codex, Claude Code, DSH, OpenCode, and more.
 
 <p align="center">
-  <img src="docs/assets/readme-hero-design-agent.webp" alt="OpenDesign: The 1st Collaborative AI Design Agent Workspace" width="100%" />
+  <img src="docs/assets/readme-hero-design-agent.webp" alt="OpenDesign — the collaborative AI design agent workspace for macOS, Windows, and Linux (.deb, .rpm, Flatpak, AppImage)" width="100%" />
 </p>
 
 <p align="center">
@@ -19,6 +21,7 @@
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat" /></a>
   <a href="https://discord.gg/mHAjSMV6gz"><img alt="discord" src="https://img.shields.io/discord/1479002485040480266?style=flat&logo=discord&logoColor=white&label=discord&color=5865F2&cacheSeconds=3600" /></a>
   <a href="QUICKSTART.md"><img alt="quickstart" src="https://img.shields.io/badge/quickstart-3%20commands-green?style=flat" /></a>
+  <a href="https://github.com/mitexleo/open-design-linux/releases"><img alt="linux packages" src="https://img.shields.io/badge/Linux-.deb%20%7C%20.rpm%20%7C%20Flatpak%20%7C%20AppImage-blueviolet.svg?style=flat&logo=linux&logoColor=white" /></a>
 </p>
 
 <p align="center"><b>English</b> · <a href="docs/i18n/README.es.md">Español</a> · <a href="docs/i18n/README.pt-BR.md">Português</a> · <a href="docs/i18n/README.de.md">Deutsch</a> · <a href="docs/i18n/README.fr.md">Français</a> · <a href="docs/i18n/README.zh-CN.md">简体中文</a> · <a href="docs/i18n/README.zh-TW.md">繁體中文</a> · <a href="docs/i18n/README.ko.md">한국어</a> · <a href="docs/i18n/README.ja-JP.md">日本語</a> · <a href="docs/i18n/README.ar.md">العربية</a> · <a href="docs/i18n/README.ru.md">Русский</a> · <a href="docs/i18n/README.uk.md">Українська</a> · <a href="docs/i18n/README.tr.md">Türkçe</a> · <a href="docs/i18n/README.th.md">ภาษาไทย</a></p>
@@ -236,7 +239,7 @@ Every deck exports to **HTML** (single file, inlined assets), **PDF** (browser p
 
 - 🤖 **Agent-native, model-agnostic.** We don't ship an agent. The `claude` / `codex` / `cursor-agent` / `copilot` / `hermes` / `kimi` already on your `PATH` are the design engine. Swap with one click.
 - 🧠 **Brand-grade by default.** Every render reads the active package's `DESIGN.md` as the core brand contract. 151 design-system packages ship with the repo; legacy packages may be `DESIGN.md`-only, while newer packages can add `manifest.json`, `tokens.css`, components, assets, and provenance. Drop a folder in, the picker finds it.
-- 🖥️ **Local-first, BYOK at every layer.** Native desktop apps for macOS (Apple Silicon + Intel) and Windows (x64). Linux desktop users can currently run OpenDesign [from source](#-run-from-source); the latest official release does not include a prebuilt Linux artifact. Product analytics and session replay are consent-gated; scrubbed safety and reliability telemetry is always on. Before describing daemon data paths, contributors and operators MUST read `AGENTS.md` → **Daemon data directory contract**. This README MUST NOT restate it.
+- 🖥️ **Local-first, BYOK at every layer.** Native desktop apps for macOS (Apple Silicon + Intel), Windows (x64), and **Linux** — shipped as `.deb`, `.rpm`, Flatpak, and AppImage packages (see [OpenDesign on Linux](#opendesign-on-linux)). Product analytics and session replay are consent-gated; scrubbed safety and reliability telemetry is always on. Before describing daemon data paths, contributors and operators MUST read `AGENTS.md` → **Daemon data directory contract**. This README MUST NOT restate it.
 - 🌍 **Composable on four planes.** **Plugins** carry runnable workflows · functional **skills** carry agent behavior · **design templates** carry rendering blueprints · **design systems** carry the brand. All four use portable, versionable directories that anyone can author and publish.
 - 🔁 **Refresh an existing codebase.** Hand a `git` repo + `DESIGN.md` to the agent and it refactors your real components to the brand spec.
 - 🔒 **Privacy by conviction.** Projects can run locally or in your own deployment. Cloud model and OpenDesign Cloud requests are sent to the corresponding services. The BYOK proxy includes SSRF safeguards.
@@ -251,7 +254,7 @@ The fastest way to use OpenDesign. No Node, no pnpm, no clone.
 
 - **macOS** (Apple Silicon · Intel x64) → [**open-design.ai**](https://open-design.ai/?utm_source=github&utm_medium=referral&utm_content=readme_download_macos) or [GitHub Releases](https://github.com/nexu-io/open-design/releases)
 - **Windows** (x64) → [**open-design.ai**](https://open-design.ai/?utm_source=github&utm_medium=referral&utm_content=readme_download_windows) or [GitHub Releases](https://github.com/nexu-io/open-design/releases)
-- **Linux** → No prebuilt Linux artifact is currently published in the official releases. For now, [run OpenDesign from source](#-run-from-source); Linux release work is tracked in [#4368](https://github.com/nexu-io/open-design/issues/4368).
+- **Linux** (x64) → [**GitHub Releases**](https://github.com/mitexleo/open-design-linux/releases) — `.deb`, `.rpm`, Flatpak, and AppImage. See [OpenDesign on Linux](#opendesign-on-linux) for per-distro install commands.
 
 After install: the app auto-detects every coding-agent CLI on your `PATH`, loads 100+ functional skills, the separate rendering-template catalog, and 151 design systems, and lets you type a brief in the entry view.
 
@@ -337,6 +340,36 @@ Node `~24`, pnpm `10.33.x`. WSL2 users, see [`docs/wsl-setup.md`](docs/wsl-setup
 3. **The agent creates the first deliverable.** Plugin + functional skill or design template + `DESIGN.md` are bound. Filesystem-backed CLI runs write canonical project files and the preview follows them; BYOK/plain-API runs without file tools return one complete `<artifact>` block.
 4. **Hand off to engineering.** The artifact is real HTML/CSS — drop it into Cursor, Codex, or Claude Code to keep building as code. Or export PPTX / PDF / MP4 straight to marketing.
 5. **OpenDesign gets smarter as you use it.** Your screenshots, fonts, palettes, and confirmed artifacts accumulate as defaults for the next session. Less rework, less drift.
+
+---
+
+## OpenDesign on Linux
+
+OpenDesign runs as a native Linux desktop app. This fork publishes ready-to-install **x86_64** packages for every release — **[download the latest Linux build](https://github.com/mitexleo/open-design-linux/releases)**. Pick the format that matches your distribution:
+
+| Format | Distributions | Install |
+|---|---|---|
+| **`.deb`** | Debian · Ubuntu · Linux Mint · Pop!\_OS · elementary · Kali | `sudo apt install ./open-design-<version>-linux-x64.deb` |
+| **`.rpm`** | Fedora · RHEL · CentOS Stream · Rocky · AlmaLinux · openSUSE | `sudo dnf install ./open-design-<version>-linux-x64.rpm` |
+| **Flatpak** | Any distro with Flatpak (sandboxed, distro-agnostic) | `flatpak install --user ./open-design-<version>-linux-x64.flatpak` |
+| **AppImage** | Any distro (portable, no install step) | `chmod +x ./open-design-<version>-linux-x64.AppImage && ./open-design-<version>-linux-x64.AppImage` |
+
+Replace `<version>` with the release you downloaded (for example `0.25.0`). Every artifact ships alongside a matching `.sha256` checksum file.
+
+**Requirements.** x86_64 with glibc 2.27 or newer — the packages are built against the `electronuserland/builder` baseline, so they run on Ubuntu 20.04+, Debian 11+, Fedora 33+, Arch Linux, and openSUSE Leap 15.3+. A coding-agent CLI on your `PATH` (`claude`, `codex`, `cursor-agent`, `opencode`, …) drives the design loop; without one, use the BYOK proxy or OpenDesign Cloud.
+
+**Uninstall.**
+
+```bash
+sudo apt remove open-design                            # .deb
+sudo dnf remove open-design                            # .rpm
+flatpak uninstall --user io.open-design.OpenDesign     # Flatpak
+rm ~/Applications/open-design-*-linux-x64.AppImage     # AppImage (delete the file)
+```
+
+**Why these formats?** `.deb` and `.rpm` integrate with your system package manager and register the `od://` protocol handler; the Flatpak bundle is sandboxed and distro-agnostic; the AppImage is a single portable file with no install step. All four are built from the same Electron app.
+
+**From source, headless, or Docker.** Prefer a clone, a headless server, or a container? The app also installs from a [source checkout](#-run-from-source) or with [Docker](#-run-with-docker). See [`docs/install-linux.md`](docs/install-linux.md) for the full Linux guide, including host agent-CLI detection and the Flatpak sandbox notes.
 
 ---
 
@@ -571,7 +604,7 @@ Full architecture → [`docs/architecture.md`](docs/architecture.md). Skill prot
 - [x] **0.12.0** — _Brand-backed Design System_: turn the brand you already own into a reusable, portable `DESIGN.md` system
 - [x] **0.13.0** — _Stay in Flow_: native session resume, faster model picking, and export straight to screenshot-backed PPTX / PDF
 - [x] Published desktop releases — macOS (Apple Silicon + Intel) + Windows (x64)
-- [ ] Published Linux desktop release (optional lane) — tracked in [#4368](https://github.com/nexu-io/open-design/issues/4368)
+- [x] Published Linux desktop packages — `.deb`, `.rpm`, Flatpak, and AppImage ([GitHub Releases](https://github.com/mitexleo/open-design-linux/releases))
 - [ ] Comment-mode surgical edits — partially shipped; reliable targeted patching in progress
 - [ ] AI-emitted tweaks panel UX — not yet implemented
 - [ ] `npx od init` to scaffold a project with `DESIGN.md`

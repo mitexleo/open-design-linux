@@ -11,7 +11,8 @@ Read `tools/pack/CACHE.md` before changing any build-cache node key, adding a ca
 - Windows NSIS build/install/start/stop/logs/uninstall/cleanup/list/reset smoke commands.
 - Windows registry observation/cleanup must go through `reg.exe` and stay scoped to entries matching the namespace install/uninstaller paths.
 - Windows lifecycle logs must expose NSIS automation logs/markers/timings in addition to app runtime logs.
-- Linux AppImage build/install/start/stop/logs/uninstall/cleanup smoke commands.
+- Linux build/install/start/stop/logs/uninstall/cleanup smoke commands, producing AppImage, `.deb`, `.rpm`, and Flatpak artifacts.
+- Linux `.deb`/`.rpm` builds are native electron-builder targets; Flatpak is built by `flatpak-builder` from the unpacked `dir` output (`--to flatpak`, explicit-only, host toolchain required).
 - Linux headless (no-Electron) install/start/stop via `--headless` flag on `install`, `start`, and `stop`.
 - Linux containerized builds via `electronuserland/builder` Docker image for distro-agnostic glibc compat.
 - Consuming sidecar/process/path primitives from `@open-design/sidecar-proto`, `@open-design/sidecar`, and `@open-design/platform`.
