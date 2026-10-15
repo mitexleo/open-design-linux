@@ -176,6 +176,11 @@ export function buildDockerArgs(
     `mv ${CONTAINER_PNPM_PATH}.tmp ${CONTAINER_PNPM_PATH} && ` +
     `chmod +x ${CONTAINER_PNPM_PATH} && ` +
     `PNPM_HOME=${CONTAINER_PNPM_HOME} PATH=${CONTAINER_PNPM_HOME}:$PATH ${CONTAINER_PNPM_PATH} env use --global ${CONTAINER_NODE_VERSION} && ` +
+    // Expose the standalone pnpm as `pnpm` on PATH. electron-builder's
+    // node-module collector shells out to `pnpm` (it detects the repo's
+    // packageManager), and the standalone binary only exists as /tmp/pnpm,
+    // which is not on PATH — without this shim the collector exits 127.
+    `ln -sf ${CONTAINER_PNPM_PATH} ${CONTAINER_PNPM_HOME}/pnpm && ` +
     `export PNPM_HOME=${CONTAINER_PNPM_HOME} PATH=${CONTAINER_PNPM_HOME}:$PATH && ` +
     `command -v node >/dev/null`;
   const pnpmCmd = CONTAINER_PNPM_PATH;

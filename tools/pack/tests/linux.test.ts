@@ -238,6 +238,8 @@ describe("buildDockerArgs", () => {
     expect(last).toMatch(/mv \/tmp\/pnpm\.tmp \/tmp\/pnpm/);
     expect(last).toMatch(/chmod \+x \/tmp\/pnpm/);
     expect(last).toMatch(/\/tmp\/pnpm env use --global 24\.\d+\.\d+/);
+    // electron-builder's node-module collector runs `pnpm` off PATH.
+    expect(last).toMatch(/ln -sf \/tmp\/pnpm \/tmp\/pnpm-home\/pnpm/);
     expect(last).toMatch(/\/tmp\/pnpm install --frozen-lockfile/);
     expect(last).toMatch(/node tools\/pack\/bin\/tools-pack\.mjs linux build --to all --namespace default/);
     expect(last).not.toMatch(/\/tmp\/pnpm tools-pack linux build/);
