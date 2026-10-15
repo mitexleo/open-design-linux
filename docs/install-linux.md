@@ -72,6 +72,8 @@ flatpak install --user ./open-design-<version>-linux-x64.flatpak
 flatpak run io.opendesign.OpenDesign
 ```
 
+Installing the bundle also adds **Open Design** to your application menu — the exported menu entry and icon are named after the app id (`io.opendesign.OpenDesign`), which is what Flatpak requires.
+
 **Uninstall:** `flatpak uninstall --user io.opendesign.OpenDesign`
 
 ### Flatpak sandbox notes
