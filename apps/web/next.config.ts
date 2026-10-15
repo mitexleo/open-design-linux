@@ -195,13 +195,34 @@ export function cmsHostReleaseFingerprint(
   ).digest('hex')}`;
 }
 
+/**
+ * The CMS host release fingerprint is baked into the client at build time.
+ * Next also loads next.config at server startup, but a packaged server ships
+ * only the compiled client and node_modules — the monorepo sources this
+ * fingerprint reads are gone — so evaluating it there throws `ENOENT` and takes
+ * the whole web sidecar (and therefore the app) down. Compute it only when every
+ * input is present; otherwise leave it undefined, which the build has already
+ * superseded.
+ */
+export function resolveCmsHostReleaseFingerprint(
+  webRoot: string,
+  workspaceRoot: string,
+): string | undefined {
+  const entryPresent = existsSync(resolve(webRoot, 'src/components/touchpoint-component.ts'));
+  const inputsPresent = CMS_HOST_RELEASE_INPUTS.every((file) =>
+    existsSync(resolve(workspaceRoot, file)),
+  );
+  if (!entryPresent || !inputsPresent) {
+    return undefined;
+  }
+  return cmsHostReleaseFingerprint((file) => readFileSync(resolve(workspaceRoot, file)));
+}
+
 const nextConfig: NextConfig = {
   env: {
     // Embedded in the client at build time. Packaged servers use the already
     // compiled client and need not retain source files to load this config.
-    NEXT_PUBLIC_CMS_HOST_RELEASE: existsSync(resolve(WEB_ROOT, 'src/components/touchpoint-component.ts'))
-      ? cmsHostReleaseFingerprint((file) => readFileSync(resolve(WORKSPACE_ROOT, file)))
-      : undefined,
+    NEXT_PUBLIC_CMS_HOST_RELEASE: resolveCmsHostReleaseFingerprint(WEB_ROOT, WORKSPACE_ROOT),
   },
   allowedDevOrigins: configuredAllowedDevHosts(),
   outputFileTracingRoot: WORKSPACE_ROOT,
