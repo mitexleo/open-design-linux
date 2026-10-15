@@ -363,7 +363,7 @@ Replace `<version>` with the release you downloaded (for example `0.25.0`). Ever
 ```bash
 sudo apt remove open-design                            # .deb
 sudo dnf remove open-design                            # .rpm
-flatpak uninstall --user io.open-design.OpenDesign     # Flatpak
+flatpak uninstall --user io.opendesign.OpenDesign      # Flatpak
 rm ~/Applications/open-design-*-linux-x64.AppImage     # AppImage (delete the file)
 ```
 

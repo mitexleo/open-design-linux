@@ -60,6 +60,7 @@ import {
   cleanupPackedLinuxNamespace,
   collectBuiltLinuxArtifacts,
   createLinuxDesktopLaunchEnv,
+  FLATPAK_APP_ID,
   inspectPackedLinuxApp,
   LINUX_APPIMAGE_EXECUTABLE_ARGS,
   matchesAppImageProcess,
@@ -697,14 +698,14 @@ describe("renderFlatpakManifest", () => {
     const out = renderFlatpakManifest(
       "app-id: @@APP_ID@@\n# @@VERSION@@\nexec @@EXECUTABLE@@ @@SOURCE@@",
       {
-        appId: "io.open-design.OpenDesign",
+        appId: "io.opendesign.OpenDesign",
         executable: "Open Design",
         source: "/out/linux-unpacked",
         version: "0.25.0",
       },
     );
 
-    expect(out).toContain("app-id: io.open-design.OpenDesign");
+    expect(out).toContain("app-id: io.opendesign.OpenDesign");
     expect(out).toContain("# 0.25.0");
     expect(out).toContain("exec Open Design /out/linux-unpacked");
     expect(out).not.toMatch(/@@[A-Z_]+@@/);
@@ -713,14 +714,24 @@ describe("renderFlatpakManifest", () => {
   it("renders the shipped manifest template with no leftover tokens", () => {
     const template = readFileSync(linuxResources.flatpakManifest, "utf8");
     const out = renderFlatpakManifest(template, {
-      appId: "io.open-design.OpenDesign",
+      appId: FLATPAK_APP_ID,
       executable: "Open Design",
       source: "/out/linux-unpacked",
       version: "0.25.0",
     });
 
-    expect(out).toContain("app-id: io.open-design.OpenDesign");
+    expect(out).toContain(`app-id: ${FLATPAK_APP_ID}`);
     expect(out).not.toMatch(/@@[A-Z_]+@@/);
+  });
+});
+
+describe("FLATPAK_APP_ID", () => {
+  it("is a valid Flatpak app id: hyphens are allowed only in the last segment", () => {
+    const segments = FLATPAK_APP_ID.split(".");
+    expect(segments.length).toBeGreaterThan(1);
+    for (const segment of segments.slice(0, -1)) {
+      expect(segment).not.toContain("-");
+    }
   });
 });
 

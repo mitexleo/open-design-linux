@@ -55,7 +55,7 @@ export const winResources = {
 export const linuxResources = {
   icon: join(resourcesRoot, "linux", "icon.png"),
   desktopTemplate: join(resourcesRoot, "linux", "open-design.desktop.template"),
-  flatpakManifest: join(resourcesRoot, "linux", "io.open-design.OpenDesign.yml"),
+  flatpakManifest: join(resourcesRoot, "linux", "io.opendesign.OpenDesign.yml"),
 } as const;
 
 const BUNDLED_RESOURCE_TREES = [

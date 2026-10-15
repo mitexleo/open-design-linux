@@ -193,7 +193,7 @@ flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flat
 flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 ```
 
-The build first produces electron-builder's `linux-unpacked` output, then renders `tools/pack/resources/linux/io.open-design.OpenDesign.yml` (`@@APP_ID@@` / `@@EXECUTABLE@@` / `@@SOURCE@@` / `@@VERSION@@`) and runs `flatpak-builder` + `flatpak build-bundle`. The bundle lands next to the other artifacts as `Open-Design.<namespace>.flatpak`.
+The build first produces electron-builder's `linux-unpacked` output, then renders `tools/pack/resources/linux/io.opendesign.OpenDesign.yml` (`@@APP_ID@@` / `@@EXECUTABLE@@` / `@@SOURCE@@` / `@@VERSION@@`) and runs `flatpak-builder` + `flatpak build-bundle`. The bundle lands next to the other artifacts as `Open-Design.<namespace>.flatpak`.
 
 **Electron-in-Flatpak caveats:** the Chromium setuid sandbox is unusable inside the Flatpak sandbox, so the generated `/app/bin/open-design` launcher passes `--no-sandbox`. The sandbox also restricts which host coding-agent CLIs the packaged daemon can see; the manifest grants `--filesystem=home` so projects and home-directory CLIs work, but an agent installed elsewhere (e.g. a system path) may need a wider `--filesystem` entry in the manifest.
 

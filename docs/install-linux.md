@@ -69,10 +69,10 @@ The Flatpak bundle is sandboxed and distro-agnostic. It needs the `org.freedeskt
 flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak install --user flathub org.freedesktop.Platform//24.08
 flatpak install --user ./open-design-<version>-linux-x64.flatpak
-flatpak run io.open-design.OpenDesign
+flatpak run io.opendesign.OpenDesign
 ```
 
-**Uninstall:** `flatpak uninstall --user io.open-design.OpenDesign`
+**Uninstall:** `flatpak uninstall --user io.opendesign.OpenDesign`
 
 ### Flatpak sandbox notes
 

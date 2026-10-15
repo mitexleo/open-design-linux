@@ -788,7 +788,9 @@ async function findBuiltAppImage(paths: LinuxPaths): Promise<string | null> {
 // consumes the unpacked `dir` output electron-builder already produced. ---
 
 const LINUX_UNPACKED_DIR_NAME = "linux-unpacked";
-const FLATPAK_APP_ID = "io.open-design.OpenDesign";
+// Flatpak/D-Bus app ids allow a hyphen only in the last segment, so
+// `io.open-design.OpenDesign` is rejected by flatpak-builder.
+export const FLATPAK_APP_ID = "io.opendesign.OpenDesign";
 
 export type FlatpakManifestValues = {
   appId: string;
