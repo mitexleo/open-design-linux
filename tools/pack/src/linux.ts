@@ -225,6 +225,13 @@ export function buildDockerArgs(
     // container is.
     "-e",
     "CI=true",
+    // The inner workspace build re-enters the package manager through
+    // `createPackageManagerInvocation`, which prefers `npm_execpath` and
+    // otherwise falls back to `corepack pnpm`. The builder image strips
+    // corepack, so without this the nested build dies with `spawn corepack
+    // ENOENT`. Point it at the standalone pnpm this container already installed.
+    "-e",
+    `npm_execpath=${CONTAINER_PNPM_PATH}`,
     "-e",
     `${PRODUCTION_INSTALL_PNPM_BIN_ENV}=${CONTAINER_PNPM_PATH}`,
   ];

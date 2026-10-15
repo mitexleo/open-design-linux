@@ -177,6 +177,11 @@ describe("buildDockerArgs", () => {
     expect(args.findIndex((arg, i) => arg === "-e" && args[i + 1] === "CI=true")).toBeGreaterThanOrEqual(0);
   });
 
+  it("points npm_execpath at the standalone pnpm so the nested build never needs corepack", () => {
+    const args = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
+    expect(args.findIndex((arg, i) => arg === "-e" && args[i + 1] === "npm_execpath=/tmp/pnpm")).toBeGreaterThanOrEqual(0);
+  });
+
   it("passes the telemetry relay URL into containerized builds when configured", () => {
     const args = buildDockerArgs(
       {
