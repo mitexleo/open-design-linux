@@ -137,7 +137,9 @@ jobs:
 
           read_artifact() { # json-path key
             local value
-            value="$(jq -r ".$2" "$1")"
+            # Slurp to tolerate any extra JSON documents a build step may have
+            # emitted; the authoritative result is the last one.
+            value="$(jq -rs ".[-1].$2" "$1")"
             if [ -z "$value" ] || [ "$value" = "null" ]; then
               echo "missing $2 in $1" >&2
               exit 1
@@ -162,7 +164,7 @@ jobs:
           flatpak_json="$report_dir/build-flatpak.json"
           flatpak=""
           if [ -f "$flatpak_json" ]; then
-            flatpak="$(jq -r '.flatpakPath // empty' "$flatpak_json")"
+            flatpak="$(jq -rs '.[-1].flatpakPath // empty' "$flatpak_json")"
           fi
           if [ -n "$flatpak" ]; then
             stage "$flatpak" "open-design-${VERSION}-linux-x64.flatpak"

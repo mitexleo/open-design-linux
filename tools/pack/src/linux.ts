@@ -942,7 +942,15 @@ async function runBuildInContainer(config: ToolPackConfig): Promise<void> {
   const args = buildDockerArgs(config, { uid, gid });
 
   return new Promise((resolve, reject) => {
-    const child = spawn("docker", args, { stdio: "inherit", env: process.env });
+    // The container's stdout carries the inner `tools-pack linux build --json`
+    // document, whose paths are container-side (/tools-pack/...). Forward it to
+    // stderr so this process's stdout keeps exactly one JSON document — the
+    // outer result, with host-side paths that the caller can actually use.
+    // Otherwise `--json | jq` consumes two documents and the container path wins.
+    const child = spawn("docker", args, { stdio: ["inherit", "pipe", "inherit"], env: process.env });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+    });
     // In Node's child-process `exit` event, code === null means the child was
     // terminated by a signal (SIGTERM, SIGKILL, etc.). A signal-terminated
     // build is NOT a successful build — the AppImage may be missing or partial,
