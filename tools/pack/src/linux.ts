@@ -528,6 +528,22 @@ async function copyResourceTree(config: ToolPackConfig, paths: LinuxPaths): Prom
 
 // --- Step 4: writeAssembledApp helper ---
 
+// The packed internal packages declare each other with concrete versions
+// (`pnpm pack` rewrites `workspace:*` to e.g. `0.25.0`), so a pnpm production
+// install would try to fetch `@open-design/*` from the registry and 404 with
+// ERR_PNPM_FETCH_404. npm's arborist reuses the top-level `file:` dependency for
+// those transitive ranges, but pnpm resolves each spec independently. In pnpm 10
+// the `pnpm.overrides` field moved out of package.json into pnpm-workspace.yaml,
+// so we write one mapping every internal package to its tarball. npm ignores the
+// file, so the mac/win install path is unaffected.
+export function renderAssembledPnpmOverrides(dependencies: Record<string, string>): string {
+  return [
+    "overrides:",
+    ...Object.entries(dependencies).map(([name, spec]) => `  "${name}": "${spec}"`),
+    "",
+  ].join("\n");
+}
+
 async function writeAssembledApp(
   config: ToolPackConfig,
   paths: LinuxPaths,
@@ -561,6 +577,16 @@ async function writeAssembledApp(
     }
   };
   await writeFile(paths.assembledPackageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+
+  // Let pnpm resolve the internal packages from the local tarballs (see
+  // renderAssembledPnpmOverrides). npm ignores this file.
+  if (packed.length > 0) {
+    await writeFile(
+      join(paths.assembledAppRoot, "pnpm-workspace.yaml"),
+      renderAssembledPnpmOverrides(dependencies),
+      "utf8",
+    );
+  }
 
   await writeFile(paths.assembledMainEntryPath, renderLinuxPackagedMainEntry(), "utf8");
 

@@ -63,6 +63,7 @@ import {
   inspectPackedLinuxApp,
   LINUX_APPIMAGE_EXECUTABLE_ARGS,
   matchesAppImageProcess,
+  renderAssembledPnpmOverrides,
   renderDesktopTemplate,
   renderFlatpakManifest,
   renderLinuxAppImageAppRun,
@@ -718,6 +719,19 @@ describe("renderFlatpakManifest", () => {
 
     expect(out).toContain("app-id: io.open-design.OpenDesign");
     expect(out).not.toMatch(/@@[A-Z_]+@@/);
+  });
+});
+
+describe("renderAssembledPnpmOverrides", () => {
+  it("maps each internal package to its tarball so pnpm resolves it instead of the registry", () => {
+    const out = renderAssembledPnpmOverrides({
+      "@open-design/launcher-proto": "file:/out/tarballs/open-design-launcher-proto-0.25.0.tgz",
+      "@open-design/sidecar-proto": "file:/out/tarballs/open-design-sidecar-proto-0.25.0.tgz",
+    });
+
+    expect(out).toContain("overrides:");
+    expect(out).toContain('"@open-design/launcher-proto": "file:/out/tarballs/open-design-launcher-proto-0.25.0.tgz"');
+    expect(out).toContain('"@open-design/sidecar-proto": "file:/out/tarballs/open-design-sidecar-proto-0.25.0.tgz"');
   });
 });
 
