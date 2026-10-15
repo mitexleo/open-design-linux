@@ -172,6 +172,11 @@ describe("buildDockerArgs", () => {
     expect(args).toContain("ELECTRON_BUILDER_CACHE=/home/builder/.cache/electron-builder");
   });
 
+  it("sets CI=true so the inner pnpm install purges a stale node_modules without a TTY", () => {
+    const args = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
+    expect(args.findIndex((arg, i) => arg === "-e" && args[i + 1] === "CI=true")).toBeGreaterThanOrEqual(0);
+  });
+
   it("passes the telemetry relay URL into containerized builds when configured", () => {
     const args = buildDockerArgs(
       {

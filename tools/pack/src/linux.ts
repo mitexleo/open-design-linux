@@ -217,6 +217,14 @@ export function buildDockerArgs(
     "ELECTRON_CACHE=/home/builder/.cache/electron",
     "-e",
     "ELECTRON_BUILDER_CACHE=/home/builder/.cache/electron-builder",
+    // The inner `pnpm install` runs after a host-side install has already
+    // created /project/node_modules. The container's pnpm sees a store/layout
+    // mismatch and wants to purge that directory, but refuses without a TTY
+    // (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY). CI=true is pnpm's documented
+    // switch for a non-interactive purge, which is exactly what a build
+    // container is.
+    "-e",
+    "CI=true",
     "-e",
     `${PRODUCTION_INSTALL_PNPM_BIN_ENV}=${CONTAINER_PNPM_PATH}`,
   ];
