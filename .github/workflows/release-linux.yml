@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build and publish, for example v0.25.0. Must already exist."
+        description: "Release tag to build and publish, for example v0.25.0. Created at the dispatched commit if it does not exist yet."
         required: true
         type: string
 
@@ -107,6 +107,10 @@ jobs:
       # which clears its output root first, so reusing the AppImage/deb/rpm dir
       # would wipe those artifacts before they are staged.
       - name: Build Flatpak bundle
+        # The Flatpak toolchain (flatpak-builder + org.freedesktop runtimes) is
+        # the flakiest part of the lane; a failure here should not cost the
+        # deb/rpm/AppImage artifacts. Assembly below skips a missing bundle.
+        continue-on-error: true
         env:
           NS: release-linux
           VERSION: ${{ steps.release.outputs.version }}
@@ -144,7 +148,6 @@ jobs:
           appimage="$(read_artifact "$report_dir/build-all.json" appImagePath)"
           deb="$(read_artifact "$report_dir/build-all.json" debPath)"
           rpm="$(read_artifact "$report_dir/build-all.json" rpmPath)"
-          flatpak="$(read_artifact "$report_dir/build-flatpak.json" flatpakPath)"
 
           stage() { # source destination-name
             cp "$1" "$asset_dir/$2"
@@ -154,7 +157,18 @@ jobs:
           stage "$appimage" "open-design-${VERSION}-linux-x64.AppImage"
           stage "$deb" "open-design-${VERSION}-linux-x64.deb"
           stage "$rpm" "open-design-${VERSION}-linux-x64.rpm"
-          stage "$flatpak" "open-design-${VERSION}-linux-x64.flatpak"
+
+          # Flatpak is best-effort: release the other formats even if it failed.
+          flatpak_json="$report_dir/build-flatpak.json"
+          flatpak=""
+          if [ -f "$flatpak_json" ]; then
+            flatpak="$(jq -r '.flatpakPath // empty' "$flatpak_json")"
+          fi
+          if [ -n "$flatpak" ]; then
+            stage "$flatpak" "open-design-${VERSION}-linux-x64.flatpak"
+          else
+            echo "::warning::flatpak bundle was not produced; releasing without it"
+          fi
 
           ls -l "$asset_dir"
 
