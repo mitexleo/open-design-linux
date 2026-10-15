@@ -54,7 +54,13 @@ export const winResources = {
 
 export const linuxResources = {
   icon: join(resourcesRoot, "linux", "icon.png"),
+  // electron-builder only emits a single size when given one PNG, and that size
+  // must be present in the hicolor theme index or the desktop environment finds
+  // no icon at all. Ship a pre-scaled set so deb/rpm/AppImage install real,
+  // indexed icons (16..512).
+  iconSet: join(resourcesRoot, "linux", "icons"),
   desktopTemplate: join(resourcesRoot, "linux", "open-design.desktop.template"),
+  flatpakDesktop: join(resourcesRoot, "linux", "open-design-flatpak.desktop.template"),
   flatpakManifest: join(resourcesRoot, "linux", "io.opendesign.OpenDesign.yml"),
 } as const;
 

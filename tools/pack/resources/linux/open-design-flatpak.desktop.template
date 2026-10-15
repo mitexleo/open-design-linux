@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Open Design
+GenericName=Open Design
+Comment=Local-first AI design agent workspace: prototypes, decks, and design systems from your coding agent
+Exec=open-design %U
+# Flatpak only exports the menu entry/icon when Icon matches the app id, and the
+# installed icon file must be named <app-id>.png.
+Icon=@@APP_ID@@
+Terminal=false
+Categories=Development;Graphics;Utility;
+Keywords=design;ai;prototype;deck;agent;
+StartupNotify=true
+StartupWMClass=Open Design
+MimeType=x-scheme-handler/od;

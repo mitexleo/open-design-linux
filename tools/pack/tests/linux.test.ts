@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { access, chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { posix } from "node:path";
@@ -731,6 +731,40 @@ describe("FLATPAK_APP_ID", () => {
     expect(segments.length).toBeGreaterThan(1);
     for (const segment of segments.slice(0, -1)) {
       expect(segment).not.toContain("-");
+    }
+  });
+});
+
+describe("flatpak desktop export", () => {
+  const values = {
+    appId: FLATPAK_APP_ID,
+    executable: "Open Design",
+    source: "/out/linux-unpacked",
+    version: "0.25.0",
+  };
+
+  it("installs an app-id-named desktop entry and icon so launchers show the app", () => {
+    const manifest = renderFlatpakManifest(readFileSync(linuxResources.flatpakManifest, "utf8"), values);
+
+    expect(manifest).toContain(`/app/share/applications/${FLATPAK_APP_ID}.desktop`);
+    expect(manifest).toContain(`/app/share/icons/hicolor/512x512/apps/${FLATPAK_APP_ID}.png`);
+    expect(manifest).toContain(`path: ${FLATPAK_APP_ID}.desktop`);
+    expect(manifest).toContain(`path: ${FLATPAK_APP_ID}.png`);
+  });
+
+  it("points the desktop entry Icon at the app id", () => {
+    const desktop = renderFlatpakManifest(readFileSync(linuxResources.flatpakDesktop, "utf8"), values);
+
+    expect(desktop).toContain(`Icon=${FLATPAK_APP_ID}`);
+    expect(desktop).not.toMatch(/@@[A-Z_]+@@/);
+  });
+});
+
+describe("linux icon set", () => {
+  it("ships the hicolor sizes a desktop environment actually indexes", async () => {
+    const files = await readdir(linuxResources.iconSet);
+    for (const size of [48, 64, 128, 256, 512]) {
+      expect(files).toContain(`${size}x${size}.png`);
     }
   });
 });

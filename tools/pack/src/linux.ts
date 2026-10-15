@@ -699,10 +699,12 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
         }
       : {}),
     files: ["**/*", "!**/node_modules/.bin", "!**/node_modules/electron{,/**/*}"],
-    icon: linuxResources.icon,
+    // A size set (not one PNG) so deb/rpm install icons the hicolor theme index
+    // actually lists; a lone 1024x1024 leaves the menu entry with no icon.
+    icon: linuxResources.iconSet,
     linux: {
       target: targets,
-      icon: linuxResources.icon,
+      icon: linuxResources.iconSet,
       category: "Development",
       synopsis: "Open Design",
       maintainer: "Open Design Contributors",
@@ -838,6 +840,25 @@ async function buildLinuxFlatpak(config: ToolPackConfig, paths: LinuxPaths): Pro
     version: packagedVersion,
   });
   await writeFile(manifestPath, manifest, "utf8");
+
+  // The manifest installs these two files so Flatpak exports a menu entry and
+  // icon; both must be named after the app id or the install is invisible in
+  // launchers.
+  const desktopTemplate = await readFile(linuxResources.flatpakDesktop, "utf8");
+  await writeFile(
+    join(flatpakRoot, `${FLATPAK_APP_ID}.desktop`),
+    renderFlatpakManifest(desktopTemplate, {
+      appId: FLATPAK_APP_ID,
+      executable: PRODUCT_NAME,
+      source: unpackedRoot,
+      version: packagedVersion,
+    }),
+    "utf8",
+  );
+  await cp(
+    join(linuxResources.iconSet, "512x512.png"),
+    join(flatpakRoot, `${FLATPAK_APP_ID}.png`),
+  );
 
   await execFileAsync(
     "flatpak-builder",

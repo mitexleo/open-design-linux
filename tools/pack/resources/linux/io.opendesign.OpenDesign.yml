@@ -32,6 +32,15 @@ modules:
       # sandbox, so the launcher passes --no-sandbox.
       - printf '%s\n' '#!/bin/sh' 'exec "/app/open-design/@@EXECUTABLE@@" --no-sandbox "$@"' > /app/bin/open-design
       - chmod 0755 /app/bin/open-design
+      # Flatpak only surfaces the app in the desktop menu when the entry and
+      # icon are named after the app id; without these the install has no icon
+      # and cannot be found in a launcher.
+      - install -Dm644 @@APP_ID@@.desktop /app/share/applications/@@APP_ID@@.desktop
+      - install -Dm644 @@APP_ID@@.png /app/share/icons/hicolor/512x512/apps/@@APP_ID@@.png
     sources:
       - type: dir
         path: @@SOURCE@@
+      - type: file
+        path: @@APP_ID@@.desktop
+      - type: file
+        path: @@APP_ID@@.png
