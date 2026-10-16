@@ -49,28 +49,35 @@ jobs:
 
       - name: Resolve upstream version
         id: upstream
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          set -euo pipefail
-          requested="${{ inputs.version }}"
-          if [ -n "$requested" ]; then
-            version="${requested#v}"
+          # Upstream tags are named `open-design-vX.Y.Z` (not `vX.Y.Z`), and a
+          # release-less fork will frequently have nothing new to do — so this
+          # step must never fail the job just because there is no tag to resolve.
+          set -uo pipefail
+          if [ -n "${REQUESTED_VERSION}" ]; then
+            version="$(printf '%s' "${REQUESTED_VERSION}" | sed -E 's/^open-design-//; s/^v//')"
           else
-            version="$(git ls-remote --tags --refs "$UPSTREAM_REMOTE" 'v*' \
+            version="$(git ls-remote --tags --refs "$UPSTREAM_REMOTE" \
               | awk -F/ '{print $NF}' \
-              | sed 's/^v//' \
+              | sed -E 's/^open-design-//; s/^v//' \
               | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-              | sort -V | tail -1)"
+              | sort -V | tail -1 || true)"
           fi
-          if [ -z "$version" ]; then
-            echo "could not resolve an upstream version" >&2
-            exit 1
+          if [ -z "${version}" ]; then
+            echo "no upstream stable release tag found; nothing to do"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "Upstream target: v$version"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "Upstream target: v${version}"
 
       - name: Decide whether a release is needed
         id: check
+        if: ${{ steps.upstream.outputs.found == 'true' }}
         env:
           TAG: ${{ steps.upstream.outputs.tag }}
         run: |
