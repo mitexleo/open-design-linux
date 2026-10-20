@@ -29,6 +29,11 @@ on:
 
 permissions:
   contents: write
+  # Merging upstream brings upstream's .github/workflows/* into the pushed tree,
+  # and GitHub rejects any ref that changes workflow files unless the token also
+  # carries `workflows` ("refusing to allow a GitHub App to create or update
+  # workflow ... without workflows permission").
+  workflows: write
 
 concurrency:
   group: sync-upstream-linux
