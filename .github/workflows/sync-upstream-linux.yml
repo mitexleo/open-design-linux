@@ -29,11 +29,6 @@ on:
 
 permissions:
   contents: write
-  # `actions: write` is needed to dispatch release-linux explicitly: a tag pushed
-  # with GITHUB_TOKEN does not cascade into other workflows. There is no `workflows`
-  # scope to grant — the default token can never push changes under
-  # .github/workflows/, which is why the merge step keeps our own workflow tree.
-  actions: write
 
 concurrency:
   group: sync-upstream-linux
@@ -41,9 +36,12 @@ concurrency:
 
 jobs:
   sync-and-release:
-    name: Sync upstream and trigger Linux release
+    name: Sync upstream and prepare the release tag
     if: ${{ vars.AUTO_RELEASE_UPSTREAM != 'false' }}
     runs-on: ubuntu-latest
+    outputs:
+      needed: ${{ steps.check.outputs.needed }}
+      tag: ${{ steps.upstream.outputs.tag }}
     env:
       GH_TOKEN: ${{ github.token }}
       UPSTREAM_REMOTE: https://github.com/nexu-io/open-design.git
@@ -164,19 +162,6 @@ jobs:
           git push origin "HEAD:refs/tags/$TAG"
           echo "pushed $TAG"
 
-      - name: Dispatch the Linux release
-        if: ${{ steps.check.outputs.needed == 'true' }}
-        env:
-          TAG: ${{ steps.upstream.outputs.tag }}
-        run: |
-          set -euo pipefail
-          # GitHub deliberately does not cascade events out of its own GITHUB_TOKEN,
-          # so the tag push above starts nothing on its own — dispatch the release
-          # explicitly. Dispatch ON the tag so release-linux builds the merged tree
-          # rather than the older default branch.
-          gh workflow run release-linux.yml --ref "$TAG" -f tag="$TAG"
-          echo "dispatched release-linux on $TAG"
-
       - name: Summary
         run: |
           {
@@ -187,3 +172,16 @@ jobs:
             echo "- action needed: \`${{ steps.check.outputs.needed }}\`"
             echo "- tag already present: \`${{ steps.check.outputs.tag_exists }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # A reusable-workflow call runs in this run's job context, so it keeps
+  # `contents: write`. A workflow we dispatched with GITHUB_TOKEN instead gets a
+  # read-only token and cannot create the release (HTTP 403).
+  linux-release:
+    name: Build Linux packages and publish
+    needs: sync-and-release
+    if: ${{ needs.sync-and-release.outputs.needed == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-linux.yml
+    with:
+      tag: ${{ needs.sync-and-release.outputs.tag }}

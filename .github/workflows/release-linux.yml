@@ -11,6 +11,16 @@ on:
   push:
     tags:
       - "v*"
+  # sync-upstream-linux calls this as a reusable workflow: a workflow it dispatches
+  # with GITHUB_TOKEN would run with a read-only token and could not create the
+  # release (HTTP 403 "Resource not accessible by integration"). A reusable call
+  # runs inside the caller's job context and keeps `contents: write`.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build and publish, for example v0.26.0."
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -57,6 +67,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6.0.2
         with:
+          # workflow_call / workflow_dispatch pass the tag explicitly; a tag-push
+          # event already runs on that tag, so fall back to the triggering ref.
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Setup pnpm
@@ -183,6 +196,13 @@ jobs:
           asset_dir="$RUNNER_TEMP/release-assets"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$asset_dir"/* --clobber
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            # The tag already exists (the sync job publishes it), so just attach a
+            # release to it. Passing --target would have to match its commit exactly.
+            gh release create "$TAG" \
+              --title "Open Design $VERSION" \
+              --generate-notes \
+              "$asset_dir"/*
           else
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
