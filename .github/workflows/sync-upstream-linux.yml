@@ -29,9 +29,11 @@ on:
 
 permissions:
   contents: write
-  # No `workflows` scope: the default GITHUB_TOKEN cannot push changes to
-  # .github/workflows/ at all, so the merge step deliberately keeps this fork's
-  # own workflow tree instead of taking upstream's churn.
+  # `actions: write` is needed to dispatch release-linux explicitly: a tag pushed
+  # with GITHUB_TOKEN does not cascade into other workflows. There is no `workflows`
+  # scope to grant — the default token can never push changes under
+  # .github/workflows/, which is why the merge step keeps our own workflow tree.
+  actions: write
 
 concurrency:
   group: sync-upstream-linux
@@ -100,19 +102,25 @@ jobs:
         env:
           TAG: ${{ steps.upstream.outputs.tag }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists; nothing to do"
             echo "needed=false" >> "$GITHUB_OUTPUT"
-          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "tag $TAG already exists without a release; skipping to avoid clobbering it"
-            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # No release yet for this version. The tag may already exist (a push that
+          # earlier got past the push but not the dispatch) — build it rather than
+          # clobber it, and skip the merge/push half of this job.
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists; building it without re-pushing"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Merge the upstream tag into the fork
-        if: ${{ steps.check.outputs.needed == 'true' }}
+        if: ${{ steps.check.outputs.needed == 'true' && steps.check.outputs.tag_exists == 'false' }}
         env:
           # The upstream ref (open-design-vX.Y.Z) is not our release tag (vX.Y.Z);
           # fetching ours from upstream would fail with "couldn't find remote ref".
@@ -146,15 +154,28 @@ jobs:
           git commit --no-edit
 
       - name: Push the release trigger tag
+        if: ${{ steps.check.outputs.needed == 'true' && steps.check.outputs.tag_exists == 'false' }}
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Only the tag is pushed, not main: it records the merge commit so the
+          # release builds exactly this verified tree.
+          git push origin "HEAD:refs/tags/$TAG"
+          echo "pushed $TAG"
+
+      - name: Dispatch the Linux release
         if: ${{ steps.check.outputs.needed == 'true' }}
         env:
           TAG: ${{ steps.upstream.outputs.tag }}
         run: |
           set -euo pipefail
-          # Only the tag is pushed, not main. `release-linux.yml` runs on the tag
-          # push and builds/publishes the Linux packages at this version.
-          git push origin "HEAD:refs/tags/$TAG"
-          echo "pushed $TAG; release-linux.yml will build and publish the Linux packages"
+          # GitHub deliberately does not cascade events out of its own GITHUB_TOKEN,
+          # so the tag push above starts nothing on its own — dispatch the release
+          # explicitly. Dispatch ON the tag so release-linux builds the merged tree
+          # rather than the older default branch.
+          gh workflow run release-linux.yml --ref "$TAG" -f tag="$TAG"
+          echo "dispatched release-linux on $TAG"
 
       - name: Summary
         run: |
@@ -164,4 +185,5 @@ jobs:
             echo "- upstream tag: \`${{ steps.upstream.outputs.upstream_tag }}\`"
             echo "- release tag: \`${{ steps.upstream.outputs.tag }}\`"
             echo "- action needed: \`${{ steps.check.outputs.needed }}\`"
+            echo "- tag already present: \`${{ steps.check.outputs.tag_exists }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
