@@ -29,11 +29,9 @@ on:
 
 permissions:
   contents: write
-  # Merging upstream brings upstream's .github/workflows/* into the pushed tree,
-  # and GitHub rejects any ref that changes workflow files unless the token also
-  # carries `workflows` ("refusing to allow a GitHub App to create or update
-  # workflow ... without workflows permission").
-  workflows: write
+  # No `workflows` scope: the default GITHUB_TOKEN cannot push changes to
+  # .github/workflows/ at all, so the merge step deliberately keeps this fork's
+  # own workflow tree instead of taking upstream's churn.
 
 concurrency:
   group: sync-upstream-linux
@@ -127,11 +125,25 @@ jobs:
           git fetch --no-tags upstream "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
           if git merge-base --is-ancestor "$UPSTREAM_TAG" HEAD; then
             echo "$UPSTREAM_TAG is already contained in main"
-          else
-            # A conflict here fails the job loudly and stops the release: we never
-            # publish Linux packages from a half-merged upstream tree.
-            git merge --no-edit "$UPSTREAM_TAG"
+            exit 0
           fi
+          base="$(git rev-parse HEAD)"
+          # A conflict here fails the job loudly and stops the release: we never
+          # publish Linux packages from a half-merged upstream tree.
+          git merge --no-commit --no-ff "$UPSTREAM_TAG"
+          # Publish the fork's OWN workflow tree. This repo only watches releases
+          # and builds Linux (everything upstream has been disabled here), and the
+          # default GITHUB_TOKEN is not allowed to push any change under
+          # .github/workflows/ — upstream's churn would be rejected outright.
+          rm -rf .github/workflows
+          git checkout "$base" -- .github/workflows
+          git add -A .github/workflows
+          if [ -n "$(git diff --name-only "$base" -- .github/workflows)" ]; then
+            echo "workflow tree still differs from the fork's own after restore:" >&2
+            git diff --name-only "$base" -- .github/workflows >&2
+            exit 1
+          fi
+          git commit --no-edit
 
       - name: Push the release trigger tag
         if: ${{ steps.check.outputs.needed == 'true' }}
