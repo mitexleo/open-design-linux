@@ -2,8 +2,10 @@ name: sync-upstream-linux
 
 # Keeps this soft fork in step with upstream and releases a matching Linux build.
 #
+# Upstream tags are named `open-design-vX.Y.Z`; this fork releases as `vX.Y.Z`.
 # Every run:
 #   1. resolves the newest stable tag published by upstream (`nexu-io/open-design`),
+#      keeping its exact ref name for the fetch,
 #   2. skips when this fork has already released that version,
 #   3. otherwise merges the upstream tag into the fork's tree and pushes a
 #      `v<version>` tag pointing at the merge commit.
@@ -52,15 +54,16 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          # Upstream tags are named `open-design-vX.Y.Z` (not `vX.Y.Z`), and a
-          # release-less fork will frequently have nothing new to do — so this
-          # step must never fail the job just because there is no tag to resolve.
+          # Upstream tags are named `open-design-vX.Y.Z`, while this fork releases
+          # as `vX.Y.Z`. Normalize the request to a bare version, then look the
+          # EXACT upstream tag name back up so the fetch never guesses a prefix.
+          # A quiet fork (no stable tag yet) is a skip, never a failure.
           set -uo pipefail
+          raw_tags="$(git ls-remote --tags --refs "$UPSTREAM_REMOTE" | awk -F/ '{print $NF}')"
           if [ -n "${REQUESTED_VERSION}" ]; then
             version="$(printf '%s' "${REQUESTED_VERSION}" | sed -E 's/^open-design-//; s/^v//')"
           else
-            version="$(git ls-remote --tags --refs "$UPSTREAM_REMOTE" \
-              | awk -F/ '{print $NF}' \
+            version="$(printf '%s\n' "$raw_tags" \
               | sed -E 's/^open-design-//; s/^v//' \
               | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
               | sort -V | tail -1 || true)"
@@ -70,10 +73,23 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          upstream_tag=""
+          for candidate in "open-design-v${version}" "v${version}"; do
+            if printf '%s\n' "$raw_tags" | grep -Fxq "$candidate"; then
+              upstream_tag="$candidate"
+              break
+            fi
+          done
+          if [ -z "${upstream_tag}" ]; then
+            echo "resolved version ${version} but no matching upstream tag exists; nothing to do"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-          echo "Upstream target: v${version}"
+          echo "Upstream target: ${upstream_tag} -> release v${version}"
 
       - name: Decide whether a release is needed
         id: check
@@ -95,19 +111,21 @@ jobs:
       - name: Merge the upstream tag into the fork
         if: ${{ steps.check.outputs.needed == 'true' }}
         env:
-          TAG: ${{ steps.upstream.outputs.tag }}
+          # The upstream ref (open-design-vX.Y.Z) is not our release tag (vX.Y.Z);
+          # fetching ours from upstream would fail with "couldn't find remote ref".
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
         run: |
           set -euo pipefail
           git config user.name "open-design-linux automation"
           git config user.email "actions@users.noreply.github.com"
           git remote add upstream "$UPSTREAM_REMOTE"
-          git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/$TAG"
-          if git merge-base --is-ancestor "$TAG" HEAD; then
-            echo "$TAG is already contained in main"
+          git fetch --no-tags upstream "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
+          if git merge-base --is-ancestor "$UPSTREAM_TAG" HEAD; then
+            echo "$UPSTREAM_TAG is already contained in main"
           else
             # A conflict here fails the job loudly and stops the release: we never
             # publish Linux packages from a half-merged upstream tree.
-            git merge --no-edit "$TAG"
+            git merge --no-edit "$UPSTREAM_TAG"
           fi
 
       - name: Push the release trigger tag
@@ -126,6 +144,7 @@ jobs:
           {
             echo "## Linux soft-fork sync"
             echo ""
-            echo "- upstream target: \`${{ steps.upstream.outputs.tag }}\`"
+            echo "- upstream tag: \`${{ steps.upstream.outputs.upstream_tag }}\`"
+            echo "- release tag: \`${{ steps.upstream.outputs.tag }}\`"
             echo "- action needed: \`${{ steps.check.outputs.needed }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
