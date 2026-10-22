@@ -9,13 +9,13 @@ Mirrors `nexu-io/open-design` `CONTRIBUTING.md` so the skill doesn't need to re-
 | Make OD render a new kind of artifact | a **Skill** | `skills/<your-skill>/` | one folder, ~2 files |
 | Make OD speak a new brand's visual language | a **Design System** | `design-systems/<brand>/DESIGN.md` | one Markdown file |
 | Hook up a new coding-agent CLI | an **Agent adapter** | `apps/daemon/src/agents.ts` | ~10 lines (code — out of scope for this skill) |
-| Improve docs, port a section to fr / de / zh-CN, fix typos | docs | `README.md`, `docs/i18n/README.fr.md`, `docs/i18n/README.de.md`, `docs/i18n/README.zh-CN.md`, `docs/`, `QUICKSTART.md` | one PR |
+| Improve docs or fix typos | docs | `README.md`, `docs/`, `QUICKSTART.md` | one PR |
 
 ## Localized doc files we know about
 
 | Doc family | English source | Translations seen on disk (as of plan time) |
 |---|---|---|
-| README | `README.md` | ar, de, es, fr, ja-JP, ko, pt-BR, ru, tr, uk, zh-CN, zh-TW |
+| README | `README.md` | English only — this fork's README is not translated |
 | QUICKSTART | `QUICKSTART.md` | de, fr, ja-JP, pt-BR, zh-CN, zh-TW |
 | CONTRIBUTING | `CONTRIBUTING.md` | de, fr, ja-JP, pt-BR, zh-CN |
 | MAINTAINERS | `MAINTAINERS.md` | de, fr, ja-JP, pt-BR, zh-CN |

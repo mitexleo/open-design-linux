@@ -17,7 +17,7 @@ This guide tells you exactly where to look for each type of contribution and wha
 | Make OD speak a new brand's visual language | a **Design System** | [`design-systems/<brand>/`](design-systems/) | one package: `manifest.json`, `DESIGN.md`, and `tokens.css` |
 | Hook up a new coding-agent CLI | an **Agent adapter** | [`apps/daemon/src/runtimes/defs/`](apps/daemon/src/runtimes/defs/) | one definition plus a registry entry |
 | Add a feature, fix a bug, lift a UX pattern from [`open-codesign`][ocod] | code | `apps/web/src/`, `apps/daemon/` | normal PR |
-| Improve docs, port a section to Français / Deutsch / 中文, fix typos | docs | `README.md`, `docs/i18n/README.fr.md`, `docs/i18n/README.de.md`, `docs/i18n/README.zh-CN.md`, `docs/`, `QUICKSTART.md` | one PR |
+| Improve docs or fix typos | docs | `README.md`, `docs/`, `QUICKSTART.md` | one PR |
 
 If you're not sure which bucket your idea is in, [open a discussion / issue first](https://github.com/nexu-io/open-design/issues/new) and we'll point you at the right surface.
 
