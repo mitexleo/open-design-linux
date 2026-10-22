@@ -198,6 +198,11 @@ function extractCoreDocLinks(source: string): CoreDocLink[] {
 async function checkReadmeSwitchers(): Promise<CheckResult> {
   const errors: string[] = [];
   const readmes = await rootReadmeFiles();
+  // This fork ships a single English README — it is a Linux packaging repo, not
+  // the upstream product docs — so there is no language switcher to keep in sync.
+  if (readmes.length <= 1) {
+    return { name: "root README language switchers", errors };
+  }
   const readmeSet = new Set(readmes);
   const canonicalName = "README.md";
   const canonicalSource = await readFile(docPhysicalPath(canonicalName), "utf8");

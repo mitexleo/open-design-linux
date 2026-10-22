@@ -9,7 +9,7 @@ The packages are published on this fork's [GitHub Releases](https://github.com/m
 ## Requirements
 
 - **Architecture:** x86_64 (`amd64`).
-- **glibc:** 2.27 or newer. The packages are built against the `electronuserland/builder` baseline, so they run on Ubuntu 20.04+, Debian 11+, Fedora 33+, Arch Linux, and openSUSE Leap 15.3+.
+- **glibc:** 2.35 or newer. Packages are built inside the `electronuserland/builder` (Ubuntu 22.04) baseline, which covers Ubuntu 22.04+, Debian 12+, Fedora 35+, Arch Linux, and current openSUSE.
 - **A coding-agent CLI on `PATH`** to power the design loop (`claude`, `codex`, `cursor-agent`, `opencode`, `copilot`, …). Without one, use the BYOK proxy or OpenDesign Cloud.
 - **Electron/Chromium sandbox:** Electron 41 needs unprivileged user namespaces (`kernel.unprivileged_userns_clone=1`, default on Arch, Ubuntu 24+, and Debian 12+). The AppImage and Flatpak launchers fall back to `--no-sandbox` when they are unavailable.
 
@@ -136,7 +136,7 @@ The packaging lives in `tools/pack`. From a source checkout:
 corepack pnpm install
 pnpm tools-pack linux build --to all          # AppImage + .deb + .rpm
 pnpm tools-pack linux build --to flatpak      # Flatpak bundle (needs flatpak-builder)
-pnpm tools-pack linux build --to all --containerized   # glibc 2.27 baseline via Docker
+pnpm tools-pack linux build --to all --containerized   # consistent glibc baseline via Docker
 ```
 
 See [`tools/pack/README.md`](../tools/pack/README.md#linux) for the full command surface.
