@@ -986,7 +986,7 @@ else { process.stderr.write("unexpected gh call: " + args + "\\n"); process.exit
 
     // Reacts to release-stable completing (not release: published — release-stable promotes its
     // own draft with GITHUB_TOKEN, which cannot trigger workflows), plus a manual backfill.
-    expect(workflow).toContain('workflows: ["release-stable"]');
+    expect(workflow).toContain('workflows: ["release-stable", "ci", "Docker image"]');
     expect(workflow).toContain("types: [completed]");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("github.event_name == 'workflow_dispatch'");
@@ -1002,7 +1002,7 @@ else { process.stderr.write("unexpected gh call: " + args + "\\n"); process.exit
     // --latest) or the dispatch tag — NEVER from workflow_run.head_branch, which can be the
     // dispatch ref rather than the built release branch when release-stable runs with a `ref` input.
     expect(workflow).toContain("gh release view --repo nexu-io/open-design --json tagName,isDraft,isPrerelease");
-    expect(workflow).not.toContain("github.event.workflow_run.head_branch");
+    expect(workflow).toContain("github.event.workflow_run.head_repository.full_name == github.repository");
     expect(workflow).not.toContain("HEAD_BRANCH");
 
     // Only a published (draft=false), non-prerelease, open-design-vX.Y.Z release finalizes; a
@@ -1019,11 +1019,13 @@ else { process.stderr.write("unexpected gh call: " + args + "\\n"); process.exit
     expect(workflow).toContain("npm pkg set version");
     expect(workflow).toContain("changed=true");
 
-    // The bump PR needs one core-maintainer approval (code-owned manifests + require_code_owner_review
-    // on main), so finalize requests that review and arms the merge queue pinned to the pushed SHA.
-    expect(workflow).toContain("--add-reviewer nexu-io/core-maintainers");
-    expect(workflow).toContain("--squash --auto --match-head-commit");
-    expect(workflow).toContain("head_sha=$(git rev-parse HEAD)");
+    // Approval exemption is only used by trusted version-tree validation, never a direct merge.
+    expect(workflow).toContain("ref: ${{ github.event.repository.default_branch }}");
+    expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain("node .github/scripts/release/bump-policy.ts --apply");
+    expect(workflow).toContain("inputs.follow_bump_only != true");
+    expect(workflow).not.toContain("--squash --auto --match-head-commit");
+    expect(workflow).not.toContain("gh pr merge");
     expect(workflow).toContain("git ls-remote --exit-code --heads origin \"$BRANCH\"");
 
     // The shipped release's backport label is cleaned up (tolerant of an already-deleted label).
@@ -2119,6 +2121,9 @@ process.stdin.on("end", () => {
 
     const e2eVitestGate = sectionBetween(tests, "  e2e_vitest:", "  daemon_unit_tests:");
     expect(e2eVitestGate).toContain("ref: ${{ inputs.commit }}");
+    expect(e2eVitestGate).toContain("uses: ./.github/actions/configure-ci-parallelism");
+    expect(e2eVitestGate.indexOf("uses: ./.github/actions/configure-ci-parallelism"))
+      .toBeLessThan(e2eVitestGate.indexOf("pnpm install --frozen-lockfile"));
     expect(e2eVitestGate).toContain("playwright install --with-deps chromium");
     expect(e2eVitestGate).toContain("Allow Chromium user namespaces on GitHub Ubuntu");
     expect(e2eVitestGate).toContain("kernel.apparmor_restrict_unprivileged_userns=0");
@@ -3029,6 +3034,18 @@ process.stdin.on("end", () => {
     // artifact was actually built with.
     expect(smoke).toContain("OD_PACKAGED_E2E_RELEASE_VERSION: ${{ inputs.version }}");
     expect(smoke).toContain("OD_PACKAGED_E2E_RELEASE_CHANNEL: prerelease");
+
+    // The smoke command, not report persistence, determines whether the
+    // advisory validation passed. GitHub's artifact service can be temporarily
+    // unavailable after all smoke assertions have completed.
+    for (const stepName of [
+      "Upload mac arm64 smoke report",
+      "Upload mac intel smoke report",
+      "Upload windows smoke report",
+    ]) {
+      const step = sectionBetween(smoke, `      - name: ${stepName}`, "        with:");
+      expect(step, stepName).toContain("continue-on-error: true");
+    }
 
     // The staged path must stay in lockstep with resolveMacPaths().dmgPath and
     // resolveWinPaths().setupPath, which is the only file `tools-pack install`

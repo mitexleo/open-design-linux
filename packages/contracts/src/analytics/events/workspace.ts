@@ -68,6 +68,7 @@ export interface AccountMenuClickProps extends TrackingWorkspaceDimensions {
     | 'feature_request'
     | 'github'
     | 'discord'
+    | 'feishu'
     | 'twitter'
     | 'email'
     | 'logout';
@@ -230,6 +231,8 @@ export interface ProjectCommentCreateResultProps extends TrackingWorkspaceDimens
   result: 'success';
   target_project_relation: TrackingProjectRelation;
   comment_level: 'top_level' | 'reply';
+  /** Saved comment from the existing successful create result. */
+  comment_id?: string;
   project_id: string;
   project_kind: TrackingProjectKind | null;
 }

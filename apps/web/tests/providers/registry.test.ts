@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installMockOpenDesignHost } from '@open-design/host/testing';
 import { advanceWorkspaceAccountGeneration } from '../../src/collab/workspace-identity';
@@ -19,6 +20,11 @@ import {
   deployProjectFile,
   createDesignSystemDraft,
   fetchAgentsStream,
+  fetchSkills,
+  fetchDesignTemplates,
+  fetchDesignSystems,
+  fetchPromptTemplates,
+  fetchPreviewComments,
   fetchCloudflarePagesZones,
   fetchDeployConfig,
   fetchDesignSystemsResult,
@@ -41,10 +47,86 @@ import {
   patchPreviewCommentSortKey,
   patchPreviewCommentStatus,
   updateDeployConfig,
+  COMMENT_PULL_TIMEOUT_MS,
   uploadProjectFiles,
   upsertPreviewComment,
   writeProjectTextFileDetailed,
 } from '../../src/providers/registry';
+
+describe('passive startup catalog observation', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const readers = [
+    (onReadResult: (success: boolean) => void) => fetchSkills(null, { onReadResult }),
+    (onReadResult: (success: boolean) => void) => fetchDesignTemplates({ onReadResult }),
+    (onReadResult: (success: boolean) => void) => fetchDesignSystems(null, { onReadResult }),
+    (onReadResult: (success: boolean) => void) => fetchPromptTemplates({ onReadResult }),
+  ];
+  it.each(readers.map((read, index) => ({ read, index })))(
+    'observes failures without changing the existing empty-list result $index', async ({ read }) => {
+      for (const fetcher of [
+        async () => new Response('', { status: 503 }),
+        async () => { throw new Error('offline'); },
+        async () => new Response('{'),
+      ]) {
+        const observer = vi.fn();
+        vi.stubGlobal('fetch', vi.fn(fetcher));
+        await expect(read(observer)).resolves.toEqual([]);
+        expect(observer).toHaveBeenLastCalledWith(false);
+      }
+      const observer = vi.fn();
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+        skills: [], designTemplates: [], designSystems: [], promptTemplates: [],
+      })));
+      await expect(read(observer)).resolves.toEqual([]);
+      expect(observer).toHaveBeenLastCalledWith(true);
+      await expect(read(() => { throw new Error('observation failed'); })).resolves.toEqual([]);
+    },
+  );
+});
+
+describe('explicit comment pull in the UI provider', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses the same pull endpoint as CLI and preserves local comments when remote is unavailable', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/pull')) {
+        return new Response(JSON.stringify({ pulled: true, comments: [{ id: 'visitor' }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ comments: [{ id: 'local' }] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await fetchPreviewComments('p', 'conv', personalWorkspaceContext(), true)).toEqual([{ id: 'visitor' }]);
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/p/conversations/conv/comments/pull',
+      expect.objectContaining({ method: 'POST' }));
+    fetchMock.mockImplementation(async input => String(input).endsWith('/pull')
+      ? new Response(null, { status: 503 })
+      : new Response(JSON.stringify({ comments: [{ id: 'local' }] }), { status: 200 }));
+    expect(await fetchPreviewComments('p', 'conv', personalWorkspaceContext(), true)).toEqual([{ id: 'local' }]);
+  });
+});
+
+describe('comment pull deadline', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to the local list when the remote pull outlives its deadline', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/pull')) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        });
+      }
+      return Promise.resolve(new Response(JSON.stringify({ comments: [{ id: 'local' }] }), { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const read = fetchPreviewComments('p', 'conv', personalWorkspaceContext(), true);
+    await vi.advanceTimersByTimeAsync(COMMENT_PULL_TIMEOUT_MS);
+    await expect(read).resolves.toEqual([{ id: 'local' }]);
+  });
+});
 
 describe('skill operation diagnostics', () => {
   afterEach(() => {
@@ -374,7 +456,7 @@ describe('design-system Workspace scope', () => {
     });
   });
 
-  it('keeps personal and official systems available when team materialization fails', async () => {
+  it.each([false, true])('keeps personal and official systems available when team materialization fails (observed=%s)', async (observed) => {
     const context = {
       ...teamWorkspaceContext(),
       workspaceId: 'ws-team-offline',
@@ -399,13 +481,16 @@ describe('design-system Workspace scope', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
+    await expect(fetchDesignSystems(context, observed ? { onReadResult: vi.fn() } : undefined)).resolves.toMatchObject([
+      expect.objectContaining({ id: 'user:local-brand' }),
+    ]);
     await expect(fetchDesignSystemsResult(context)).resolves.toMatchObject({
       ok: true,
       designSystems: [expect.objectContaining({
         id: 'user:local-brand',
       })],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith('/api/design-systems', expect.anything());
   });
 
   it('partitions team materialization when the Workspace changes', async () => {
@@ -1875,10 +1960,7 @@ describe('connectConnector', () => {
   it('renders a fallback link before navigating the auth popup', async () => {
     const replace = vi.fn();
     const authWindow = {
-      document: {
-        title: '',
-        body: { innerHTML: '' },
-      },
+      document: new JSDOM('<body></body>').window.document,
       location: { replace },
       close: vi.fn(),
     };
@@ -1927,10 +2009,7 @@ describe('connectConnector', () => {
 
   it('keeps the popup open with custom auth guidance when initialization fails', async () => {
     const authWindow = {
-      document: {
-        title: '',
-        body: { innerHTML: '' },
-      },
+      document: new JSDOM('<body></body>').window.document,
       location: { replace: vi.fn() },
       close: vi.fn(),
     };
@@ -2005,10 +2084,7 @@ describe('connectConnector', () => {
 
   it('renders an info notice in the popup when the connect response carries no redirect URL', async () => {
     const authWindow = {
-      document: {
-        title: '',
-        body: { innerHTML: '' },
-      },
+      document: new JSDOM('<body></body>').window.document,
       location: { replace: vi.fn() },
       close: vi.fn(),
     };

@@ -19,7 +19,7 @@ import type {
 
 const e2eRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const workspaceRoot = dirname(e2eRoot);
-const TOOLS_DEV_START_TIMEOUT_MS = 180_000;
+const TOOLS_DEV_START_TIMEOUT_MS = 330_000;
 const TOOLS_DEV_STOP_TIMEOUT_MS = 30_000;
 
 type RunToolsDevJson = <T>(

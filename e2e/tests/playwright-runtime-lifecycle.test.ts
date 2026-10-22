@@ -95,7 +95,7 @@ describe('Playwright tools-dev runtime lifecycle', () => {
     expect(calls[0]?.timeoutMs).toBe(30_000);
     expect(calls[1]?.args).toContain('--parent-pid');
     expect(calls[1]?.args).toContain('4242');
-    expect(calls[1]?.timeoutMs).toBe(180_000);
+    expect(calls[1]?.timeoutMs).toBe(330_000);
   });
 
   test('aborts a blocked cold warmup before the fixture teardown budget is consumed', async () => {

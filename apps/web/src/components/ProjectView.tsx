@@ -1,4 +1,9 @@
+import { useStartupReady } from '../observability/startup-ready';
+import { navigationTiming, useProjectNavigationReady, observeNavigation } from '../observability/navigation-timing';
+import { withLiveArtifactDeliveries } from '../runtime/live-artifact-delivery';
 import { readRetriedErrorSurface, retriedErrorSurfaceKey, writeRetriedErrorSurface } from '../runtime/chat/retried-error-surface';
+import type { ObservedPublicShareLink, ObservedShareUpdateRequest } from './share/observed-public-share-link';
+import type { ShareLoginReturn } from './share/share-login-return';
 import {
   startTransition,
   useCallback,
@@ -57,11 +62,9 @@ import {
   fetchLiveArtifacts,
   fetchProjectFiles,
   fetchProjectFileText,
-  fetchSkill,
   invalidateProjectFilesCache,
   patchPreviewCommentSortKey,
   patchPreviewCommentStatus,
-  projectRawUrl,
   uploadProjectFiles,
   upsertPreviewComment,
   writeProjectTextFile,
@@ -92,7 +95,6 @@ import {
   type ByokChatProtocol,
   type ChatTaskExecutionAnalytics,
   type ProjectWorkspaceScope,
-  type ResearchOptions,
 } from '@open-design/contracts';
 import {
   anonymizeArtifactId,
@@ -114,11 +116,14 @@ import type {
   TrackingRunRecoveryActionType,
 } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
+import { savedCommentIds } from '@open-design/contracts/analytics';
+import { observeAnalytics } from '../analytics/observe';
 import {
   trackByokPreflightBlocked,
   trackComposerBarClick,
   trackConversationForkClick,
   trackConversationForkResult,
+  trackProjectCommentSendResult,
   trackDesignSystemApplyResult,
   trackDesignSystemEnrichClick,
   trackPageView,
@@ -331,6 +336,11 @@ import {
   type ProjectResourceAuthority,
 } from '../collab/collab-context';
 import { persistCommentAnchors } from '../collab/comment-anchor-client';
+import {
+  createSingleflightRunner,
+  reconcileAttachedComments,
+  reconcilePreviewComments,
+} from '../comments/comment-list-refresh';
 import type { AnchorWriteBack } from '../comments';
 import { PluginDetailsModal } from './PluginDetailsModal';
 import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
@@ -351,6 +361,7 @@ import {
   selectAutoOpenTurnArtifact,
   selectAutoOpenTurnArtifacts,
 } from './auto-open-file';
+import { nextShareRequestNonce } from './share-request-nonce';
 import { buildRepoImportPrompt, designSystemNeedsRepoConnect } from './design-system-github-evidence';
 import { isDesignSystemProject, resolveProjectDesignSystemId } from './design-system-project';
 import { collectReferencedJsxNames } from '../runtime/jsx-module-refs';
@@ -365,7 +376,7 @@ import {
 } from './design-files/pluginFolderActions';
 import { SHARE_TO_COMMUNITY_PROMPT } from './share-to-community/shareToCommunityPrompt';
 import { CenteredLoader } from './Loading';
-import { ProjectCreationPendingChat } from './ProjectCreationPendingView';
+import { useCreationHandoffMessages } from './useCreationHandoffMessages';
 import {
   FALLBACK_MAX_CHAT_PANEL_WIDTH,
   MIN_CHAT_PANEL_WIDTH,
@@ -407,13 +418,16 @@ import { createBoundedConcurrency } from '../lib/bounded-concurrency';
 import { buildContinueInCliToast } from '../lib/build-continue-in-cli-toast';
 import { buildClipboardPrompt } from '../lib/build-clipboard-prompt';
 import { copyToClipboard } from '../lib/copy-to-clipboard';
-import { effectiveMaxTokens } from '../state/maxTokens';
 import {
   dismissHomeAttachmentUpload,
   homeAttachmentUploadsFor,
   subscribeHomeAttachmentUploads,
 } from '../state/home-attachment-handoff';
-import { effectiveAgentModelChoice, effectiveAgentModelId } from './agentModelSelection';
+import {
+  effectiveAgentModelChoice,
+  effectiveAgentModelId,
+  selectedAssistantIdentity as resolveSelectedAssistantIdentity,
+} from './agentModelSelection';
 import { mediaExecutionPolicyForProjectMetadata } from '../media/execution-policy';
 import { mediaModelProviderId } from '../media/models';
 import { byokProviderRequiresApiKey } from '../utils/byokProvider';
@@ -694,13 +708,9 @@ function mergeServerMessageWithLocal(
     if ((local.content?.length ?? 0) > (server.content?.length ?? 0)) {
       merged.content = local.content;
     }
-    if (
-      !(server.strategyTaskBlocked === false && local.strategyTaskBlocked === true)
-      && (
-        (local.events?.length ?? 0) > (server.events?.length ?? 0)
-        || localThinkingExtendsServerSnapshot(server, local)
-      )
-    ) {
+    if (!(server.strategyTaskBlocked === false && local.strategyTaskBlocked === true)
+      && ((local.events?.length ?? 0) > (server.events?.length ?? 0)
+        || localThinkingExtendsServerSnapshot(server, local))) {
       merged.events = local.events;
     }
   }
@@ -871,6 +881,12 @@ interface Props {
   initialMaterializationPending?: boolean;
   /** Workspace/member authorization lifetime for async title reads. */
   projectAuthorizationKey?: string;
+  onObservedPublicShareLink?: (share: ObservedPublicShareLink | null) => void;
+  observedPublicShareLink?: ObservedPublicShareLink | null;
+  loginUpdateRequest?: ObservedShareUpdateRequest | null;
+  onLoginUpdateRequestHandled?: (nonce: number) => void;
+  shareLoginReturn?: ShareLoginReturn | null;
+  onShareLoginReturnChange?: (request: ShareLoginReturn | null) => void;
   amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
   onArmAmrAuthRetryContinuation?: (
     continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
@@ -971,15 +987,27 @@ interface Props {
    * this project can produce a post-run extraction. */
   onRunActivityChange?: (projectId: string, active: boolean) => void;
   /**
-   * The Home send this project was just created from, while its first
-   * transcript is still settling (OPEND-2170). Non-null keeps the hand-off's
-   * chat card on top of the chat column — the same prompt bubble and
-   * preparing row the pending frame already drew — so the column never shows
-   * the whole-pane spinner, the transcript skeleton, or an empty log between
-   * the create answering and the auto-sent turn painting. App clears it on
-   * `onCreationHandoffSettled`.
+   * The Home send this project was just created from (OPEND-3334). App mounts
+   * this view on the click, before `POST /api/projects` answers, and keeps
+   * the record until the first transcript settles (OPEND-2170):
+   *
+   * - `persisted: false` — the project row does not exist on the daemon yet.
+   *   Every project read is held ({@link projectReadsHeldForCreation}); the
+   *   view draws only what this tab already knows.
+   * - `conversationId` — the seed conversation's id, minted with the project
+   *   id, so the chat pane is keyed by its final conversation from the first
+   *   frame and never re-keys when the conversation list answers.
+   * - `prompt` / `files` — the optimistic first turn, drawn under the ids the
+   *   auto-send will use, so the real turn takes over the same rows.
+   *
+   * App clears it on `onCreationHandoffSettled`.
    */
-  creationHandoff?: { prompt: string; files?: readonly File[] } | null;
+  creationHandoff?: {
+    prompt: string;
+    files?: readonly File[];
+    conversationId?: string | null;
+    persisted: boolean;
+  } | null;
   /** The first transcript is on screen (or failed to load): drop the card. */
   onCreationHandoffSettled?: (projectId: string) => void;
 }
@@ -1020,7 +1048,7 @@ let liveArtifactEventSequence = 0;
 // The brand-extraction project's design-system (brand kit) preview tab. Mirrors
 // the daemon `BRAND_KIT_FILE` (apps/daemon/src/brands/kit-render.ts); kept as a
 // local literal to respect the web↔daemon boundary.
-const BRAND_KIT_FILE = 'brand.html';
+const _BRAND_KIT_FILE = 'brand.html';
 const BRAND_EMPTY_TRANSCRIPT_RETRY_DELAYS_MS = [120, 500, 1_200, 2_000] as const;
 const BYOK_OPENCODE_UNAVAILABLE_MESSAGE =
   'BYOK API runs require OpenCode. Install OpenCode, then rescan local agents in Settings before retrying.';
@@ -1421,6 +1449,16 @@ function stableIdentityDigest(value: string): string {
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
   return hash.toString(36).padStart(13, '0');
+}
+
+/**
+ * Whether this view's project resources are off limits: a Home send's project
+ * whose create has not answered yet. Every project read waits on this.
+ */
+export function projectReadsHeldForCreation(
+  creationHandoff: { persisted: boolean } | null | undefined,
+): boolean {
+  return Boolean(creationHandoff && !creationHandoff.persisted);
 }
 
 function homeAutoSendIdentity(projectId: string): Pick<
@@ -2142,6 +2180,12 @@ export function ProjectView({
   resolveAuthoritativeProjectName,
   routeFileName,
   routeConversationId = null,
+  onObservedPublicShareLink,
+  observedPublicShareLink,
+  loginUpdateRequest,
+  onLoginUpdateRequestHandled,
+  shareLoginReturn,
+  onShareLoginReturnChange,
   config,
   agents,
   skills,
@@ -2178,6 +2222,11 @@ export function ProjectView({
   onCreationHandoffSettled,
 }: Props) {
   const { locale, t } = useI18n();
+  // A Home send mounts this view before the project row exists on the daemon
+  // (OPEND-3334). Until it does, no project resource is read: every read
+  // would 404, and an unpersisted project must not fan out conversation,
+  // file, or presence requests. The view draws only what this tab knows.
+  const projectReadsHeld = projectReadsHeldForCreation(creationHandoff);
   const amrAuthRetryMountIdRef = useRef<string | null>(null);
   if (amrAuthRetryMountIdRef.current === null) {
     amrAuthRetryMountIdRef.current = randomUUID();
@@ -2249,6 +2298,7 @@ export function ProjectView({
     workspaceContext,
     project.workspaceId,
     initialWorkspaceScope,
+    !projectReadsHeld,
   );
   // The project's resolved scope when there is one. While that first read is
   // pending, the persisted project binding may witness the matching caller;
@@ -2434,7 +2484,7 @@ export function ProjectView({
   // Team collaboration: presence for a shared project. Dormant (no heartbeat,
   // renders nothing) unless the workspace context marks the viewer an active
   // team member — safe to mount unconditionally.
-  const projectCollab = useProjectCollab(project?.id ?? null, {
+  const projectCollab = useProjectCollab(projectReadsHeld ? null : project?.id ?? null, {
     workspaceContext: projectRunWorkspaceContext,
     workspaceContextLoading: projectWorkspaceScopeState.loading,
     initialMaterializationPending,
@@ -2507,6 +2557,7 @@ export function ProjectView({
     projectRunWorkspaceContext,
     project.workspaceId,
     initialProjectDetail,
+    !projectReadsHeld,
   );
   const detailedProject = projectDetail.project?.id === project.id ? projectDetail.project : null;
   const currentProject = reconcileProjectDetail(
@@ -2853,6 +2904,7 @@ export function ProjectView({
     project.id,
     designMdRefreshKey,
     projectRunWorkspaceContext,
+    !projectReadsHeld,
   );
   const finalize = useFinalizeProject(project.id, projectRunWorkspaceContext);
   const terminalLauncher = useTerminalLaunch();
@@ -3766,6 +3818,32 @@ export function ProjectView({
         })
     : [];
   const newConversationDisabled = creatingConversation || projectMutationReadOnly;
+  // CS03: actionable business Ready, independent of the chat first-paint
+  // metric. Never accept a stale transcript or a merely mounted placeholder.
+  const projectInteractiveReady = Boolean(
+      detailedProject
+      && !projectDetail.loading
+      && !projectWorkspaceScopeState.loading
+      && !projectWorkspaceScopeState.failure
+      && activeConversationId
+      && messagesConversationId === activeConversationId
+      && messagesInitialized
+      && messagesAuthorityKeyRef.current === projectRunAuthorityKey
+      && !currentConversationSendDisabled
+      && !newConversationDisabled
+    );
+  useStartupReady({ visible: Boolean(detailedProject && !projectDetail.loading), interactive: projectInteractiveReady });
+  useProjectNavigationReady({
+    projectId: project.id,
+    conversationId: activeConversationId,
+    visible: Boolean(detailedProject && !projectDetail.loading),
+    ready: projectInteractiveReady,
+    failure: projectWorkspaceScopeState.failure ? 'scope_unavailable'
+      : projectDetail.error ? 'project_unavailable'
+      : conversationLoadFailure ? 'conversations_unavailable'
+      : activeConversationId && failedMessagesConversationId === activeConversationId
+        ? 'messages_unavailable' : null,
+  });
   const activeCompletionNotificationRunsRef = useRef<Set<string>>(new Set());
   const completedNotificationRunsRef = useRef<Set<string>>(new Set());
 
@@ -3773,6 +3851,7 @@ export function ProjectView({
   // pre-conversations, or a freshly created one whose default seed got
   // dropped), create one on the fly.
   useEffect(() => {
+    if (projectReadsHeld) return;
     let cancelled = false;
     const revalidatingCurrentProject =
       conversationsLoadedProjectIdRef.current === project.id;
@@ -3877,6 +3956,7 @@ export function ProjectView({
     commitPreviewComments,
     conversationMaterializationGenerationController,
     project.id,
+    projectReadsHeld,
     projectRunAuthorityKey,
   ]);
 
@@ -4170,7 +4250,7 @@ export function ProjectView({
           requestWorkspaceContext,
         ).then((comments) => {
           if (cancelled || previewCommentsGenerationRef.current !== commentsGeneration) return;
-          setPreviewComments(comments);
+          setPreviewComments((current) => reconcilePreviewComments(current, comments));
         }).catch(() => {
           if (cancelled || previewCommentsGenerationRef.current !== commentsGeneration) return;
           if (!reloadingCurrentConversation) setPreviewComments([]);
@@ -4395,6 +4475,7 @@ export function ProjectView({
   // load, every mutation flows through saveTabsState() which keeps DB +
   // local state coherent.
   useEffect(() => {
+    if (projectReadsHeld) return;
     let cancelled = false;
     const requestWorkspaceContext = projectRunWorkspaceContextRef.current;
     tabsLoadedRef.current = false;
@@ -4445,7 +4526,7 @@ export function ProjectView({
     return () => {
       cancelled = true;
     };
-  }, [project.id, projectRunAuthorityKey]);
+  }, [project.id, projectReadsHeld, projectRunAuthorityKey]);
 
   // Debounce the canonical (daemon + SQLite) tab-state write. The embedded
   // browser fans out url/title/favicon updates in bursts on a single page load
@@ -4649,12 +4730,13 @@ export function ProjectView({
     options?: { freshProjectFiles?: boolean },
     onAcceptedFilesGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
+    if (projectReadsHeld) return [];
     const [nextFiles] = await Promise.all([
       refreshProjectFiles({ fresh: options?.freshProjectFiles }, onAcceptedFilesGeneration),
       refreshLiveArtifacts(),
     ]);
     return nextFiles;
-  }, [refreshLiveArtifacts, refreshProjectFiles]);
+  }, [projectReadsHeld, refreshLiveArtifacts, refreshProjectFiles]);
 
   const recordManualFileWrite = useCallback((file: ProjectFile) => {
     for (const [controller, run] of manualFileWritesByRunRef.current) {
@@ -5830,30 +5912,10 @@ export function ProjectView({
   // monogram; stamping the user's currently-selected design agent makes its
   // avatar and role name follow that selection (Claude by default), matching how
   // handleSend identifies a real turn.
-  const selectedAssistantIdentity = useMemo<{
-    agentId: string | undefined;
-    agentName: string | undefined;
-  }>(() => {
-    if (config.mode === 'daemon') {
-      const selectedAgent = config.agentId ? agentsById.get(config.agentId) : null;
-      const selectedAgentChoice = config.agentId
-        ? config.agentModels?.[config.agentId]
-        : undefined;
-      const effectiveChoice = effectiveAgentModelChoice(selectedAgent, selectedAgentChoice);
-      return {
-        agentId: config.agentId ?? undefined,
-        agentName: agentModelDisplayName(
-          config.agentId,
-          selectedAgent?.name,
-          effectiveChoice?.model,
-        ),
-      };
-    }
-    return {
-      agentId: apiProtocolAgentId(config.apiProtocol),
-      agentName: apiProtocolModelLabel(config.apiProtocol, config.model),
-    };
-  }, [config, agentsById]);
+  const selectedAssistantIdentity = useMemo(
+    () => resolveSelectedAssistantIdentity(config, agents),
+    [config, agents],
+  );
 
   // One-shot: when extraction is blocked by an anti-bot wall (or has stalled past
   // the timeout), drop the assist card into the conversation so the user can
@@ -6282,22 +6344,38 @@ export function ProjectView({
     ],
   );
 
-  const refreshPreviewComments = useCallback(async () => {
+  // One comment-list read at a time for this view. The generation guard only
+  // discards a stale answer; it does not stop N triggers (SSE bursts, poll,
+  // visibility, stream reconnect) from each starting a full read. The runner
+  // does: a trigger during a read buys exactly one trailing read, run with the
+  // latest trigger's closure. A different conversation starts its own read.
+  // Note: the daemon announces a pull round before this read's `/pull`
+  // response returns, so a read that itself merged rows always earns one
+  // trailing read. That read is cheap and keeps other tabs' signals honest;
+  // do not suppress it.
+  const [runPreviewCommentsRead] = useState(createSingleflightRunner);
+  const readPreviewCommentsOnce = useCallback(async () => {
     if (!activeConversationId) return;
     const commentsGeneration = ++previewCommentsGenerationRef.current;
     const next = await fetchPreviewComments(
       project.id,
       activeConversationId,
       projectRunWorkspaceContext,
+      true,
     );
     if (previewCommentsGenerationRef.current !== commentsGeneration) return;
-    setPreviewComments(next);
-    setAttachedComments((current) =>
-      current
-        .map((attached) => next.find((comment) => comment.id === attached.id))
-        .filter((comment): comment is PreviewComment => Boolean(comment)),
-    );
+    // Unchanged comments keep their objects and an unchanged list keeps its
+    // array, so a refresh that found nothing new does not re-render.
+    setPreviewComments((current) => reconcilePreviewComments(current, next));
+    setAttachedComments((current) => reconcileAttachedComments(current, next));
   }, [project.id, activeConversationId, projectRunWorkspaceContext]);
+  const refreshPreviewComments = useCallback(
+    () => runPreviewCommentsRead(
+      `${project.id}\u0000${activeConversationId ?? ''}`,
+      readPreviewCommentsOnce,
+    ),
+    [runPreviewCommentsRead, project.id, activeConversationId, readPreviewCommentsOnce],
+  );
 
   // Expose the latest refresher to the SSE handler (defined earlier) so a
   // pushed `comment-changed` can re-fetch immediately.
@@ -6575,6 +6653,64 @@ export function ProjectView({
     ],
   );
 
+  /**
+   * Invariant: handing a comment to the agent never deletes it. Only an
+   * explicit user delete emits a comment tombstone; the hand-off lifecycle is
+   * carried by `status` alone. A run that failed or was canceled did not act
+   * on the comments it was handed, so they return to 'open' and the list
+   * shows them again.
+   */
+  const releaseCommentsAfterUnsuccessfulRun = useCallback(
+    (comments: ReadonlyArray<Pick<PreviewComment, 'id' | 'conversationId'>>) => {
+      if (comments.length === 0) return;
+      const releasedIds = new Set(comments.map((comment) => comment.id));
+      commitPreviewComments((current) =>
+        current.map((comment) =>
+          releasedIds.has(comment.id) ? { ...comment, status: 'open' } : comment,
+        ),
+      );
+      void Promise.all(
+        comments.map((comment) =>
+          patchPreviewCommentStatus(
+            project.id,
+            comment.conversationId,
+            comment.id,
+            'open',
+            projectRunWorkspaceContext,
+          ),
+        ),
+      ).catch(() => {});
+    },
+    [project.id, commitPreviewComments, projectRunWorkspaceContext],
+  );
+
+  /**
+   * Invariant: a comment is 'applying' only while a run that carries it
+   * exists or is still going to be created. A queued send reserves its
+   * comments before any run exists, so every way that send can end without a
+   * run (held by a pre-run gate, stopped or failed before the run was
+   * created, taken out of the queue) gives them back to 'open'. A held send
+   * that starts later reserves them again when its run begins.
+   */
+  const releaseCommentsOfSendWithoutRun = useCallback(
+    (send: Pick<QueuedChatSend, 'conversationId' | 'commentAttachments'>) => {
+      const reservedCommentIds = new Set(
+        previewCommentsRef.current
+          .filter((comment) => comment.status === 'applying')
+          .map((comment) => comment.id),
+      );
+      releaseCommentsAfterUnsuccessfulRun(
+        send.commentAttachments
+          .filter(
+            (attachment) =>
+              attachment.source !== 'board-batch' && reservedCommentIds.has(attachment.id),
+          )
+          .map((attachment) => ({ id: attachment.id, conversationId: send.conversationId })),
+      );
+    },
+    [releaseCommentsAfterUnsuccessfulRun],
+  );
+
   // Maximum number of times we will retry fetching a null status for a
   // spuriouslyFailedPending run before treating the absence as authoritative
   // completion.  Transient null-status retries are bounded; after
@@ -6730,6 +6866,8 @@ export function ProjectView({
           ?? await fetchChatRunStatus(runId, projectRunWorkspaceContext);
         if (cancelled) return;
         if (!physicalStatus) {
+          // A missing status response cannot invalidate persisted success.
+          if (message.runStatus === 'succeeded') continue;
           // A local retry seal is not a daemon terminal verdict. Keep this
           // run's receipts for the existing manual reconnect action.
           // `fetchChatRunStatus` returns null on ANY non-OK response or fetch
@@ -7085,7 +7223,7 @@ export function ProjectView({
             // OPEND-2588 (2026-09-04): a turn that finishes while we are
             // replaying it opens ALL of its primary artifacts, same as a live
             // completion — the user cannot tell the two apart.
-            const turnArtifacts = selectAutoOpenTurnArtifacts(produced, nextFiles, {
+            const turnArtifacts = withLiveArtifactDeliveries(selectAutoOpenTurnArtifacts(produced, nextFiles, {
               ...autoOpenArtifactOptions,
               preTurnFileNames: beforeFileNames,
               turnStartedAt: status.createdAt || message.startedAt || message.createdAt || null,
@@ -7096,7 +7234,7 @@ export function ProjectView({
                 project.id,
                 projectDetail.resolvedDir,
               ),
-            });
+            }), message.events);
             if (turnArtifacts.focused && !userTookOverPreviewRef.current) {
               requestOpenTurnArtifacts(turnArtifacts.open, turnArtifacts.focused);
             }
@@ -7622,7 +7760,7 @@ export function ProjectView({
                 );
                 // OPEND-2588 (2026-09-04): see the replay path above — a run
                 // that lands while reattached is still a turn finishing.
-                const turnArtifacts = selectAutoOpenTurnArtifacts(produced, nextFiles, {
+                const turnArtifacts = withLiveArtifactDeliveries(selectAutoOpenTurnArtifacts(produced, nextFiles, {
                   ...autoOpenArtifactOptions,
                   preTurnFileNames: beforeFileNames,
                   turnStartedAt: status.createdAt || message.startedAt || message.createdAt || null,
@@ -7636,7 +7774,7 @@ export function ProjectView({
                     project.id,
                     projectDetail.resolvedDir,
                   ),
-                });
+                }), needsFullReplay ? replayedEvents : message.events);
                 if (turnArtifacts.focused && !userTookOverPreviewRef.current) {
                   requestOpenTurnArtifacts(turnArtifacts.open, turnArtifacts.focused);
                 }
@@ -8446,7 +8584,16 @@ export function ProjectView({
     commitQueuedChatSends(next);
   }, [commitQueuedChatSends]);
 
+  // The user taking a send out of the queue, as opposed to the drain removing
+  // one whose run has started.
+  const discardQueuedChatSend = useCallback((id: string) => {
+    const item = queuedChatSendsRef.current.find((candidate) => candidate.id === id);
+    removeQueuedChatSend(id);
+    if (item) releaseCommentsOfSendWithoutRun(item);
+  }, [releaseCommentsOfSendWithoutRun, removeQueuedChatSend]);
+
   const updateQueuedChatSend = useCallback((id: string, update: QueuedChatSendUpdate) => {
+    const edited = queuedChatSendsRef.current.find((item) => item.id === id);
     const next = queuedChatSendsRef.current.map((item) => {
       if (item.id !== id) return item;
       const meta = stripQueueOnlyFromMeta({ ...(item.meta ?? {}), ...(update.meta ?? {}) });
@@ -8461,7 +8608,16 @@ export function ProjectView({
       return updated;
     });
     commitQueuedChatSends(next);
-  }, [commitQueuedChatSends]);
+    if (edited) {
+      const keptCommentIds = new Set(update.commentAttachments.map((attachment) => attachment.id));
+      releaseCommentsOfSendWithoutRun({
+        conversationId: edited.conversationId,
+        commentAttachments: edited.commentAttachments.filter(
+          (attachment) => !keptCommentIds.has(attachment.id),
+        ),
+      });
+    }
+  }, [commitQueuedChatSends, releaseCommentsOfSendWithoutRun]);
 
   const prioritizeQueuedChatSend = useCallback((id: string) => {
     const item = queuedChatSendsRef.current.find((candidate) => candidate.id === id);
@@ -8499,6 +8655,9 @@ export function ProjectView({
     attachments: ChatAttachment[];
     commentAttachments: ChatCommentAttachment[];
     conversationId: string;
+    /** A pre-run gate is holding this send, so no run is coming on its own
+     *  and its comments are not reserved. */
+    heldBeforeRun?: boolean;
     meta?: ProjectChatSendMeta;
     prompt: string;
   }) => {
@@ -8526,7 +8685,7 @@ export function ProjectView({
       setAttachedComments((current) =>
         current.filter((comment) => !reservedCommentIds.has(comment.id)),
       );
-      if (reservedCommentIds.size > 0) {
+      if (reservedCommentIds.size > 0 && !input.heldBeforeRun) {
         commitPreviewComments((current) =>
           current.map((comment) =>
             reservedCommentIds.has(comment.id)
@@ -8676,8 +8835,9 @@ export function ProjectView({
           meta: { ...(meta ?? {}), sessionMode: runSessionMode, taskAnalytics },
         });
         // `true` means the send has been durably accepted by this view's
-        // queue. Callers that own persisted annotations may only remove them
-        // after this acknowledgement; preflight rejection remains `false`.
+        // queue. Callers that hold a saved comment in their composer may only
+        // let go of it after this acknowledgement; preflight rejection
+        // remains `false`. The comment itself is never deleted by a send.
         return true;
       }
       if (currentConversationBusy) {
@@ -8767,6 +8927,9 @@ export function ProjectView({
         commentAttachments: commentAttachments.length > 0 ? commentAttachments : undefined,
       };
       const runCommentAttachments = userMsg.commentAttachments ?? [];
+      const runSavedComments = runCommentAttachments
+        .filter((attachment) => attachment.source !== 'board-batch')
+        .map((attachment) => ({ id: attachment.id, conversationId: runConversationId }));
       const runAttachments = mergeChatAttachments(
         userMsg.attachments ?? [],
         ...runCommentAttachments.map((attachment) =>
@@ -8960,7 +9123,7 @@ export function ProjectView({
           //
           // ⚠️ An EXHAUSTED wallet is not one of those states — see
           // `rejectBlockedSend` below (OPEND-2719).
-          const queueGateSend = (): boolean => {
+          const queueGateSend = (heldBeforeRun = false): boolean => {
             // 判定拒绝 = 这一轮不会有 run。先把已经画出去的那一轮收回,再决定
             // 它去哪儿 —— 三条拒绝路(会话切走 / 拦截 / 读不到)都经过这里,
             // 所以收回只写一处。放行那两档(soft / allow)碰不到它。
@@ -8971,6 +9134,7 @@ export function ProjectView({
                 prompt,
                 attachments: effectiveAttachments,
                 commentAttachments,
+                heldBeforeRun,
                 meta: { ...(meta ?? {}), sessionMode: runSessionMode, taskAnalytics },
               });
               return true;
@@ -8978,7 +9142,7 @@ export function ProjectView({
             return false;
           };
           const parkBlockedSend = (): boolean => {
-            const queued = queueGateSend();
+            const queued = queueGateSend(true);
             amrGatePausedQueueConversationsRef.current.add(gateConversationId);
             return queued;
           };
@@ -9480,7 +9644,10 @@ export function ProjectView({
         if (ev.kind === 'live_artifact') {
           setLiveArtifactEvents((prev) => appendLiveArtifactEventItem(prev, ev));
           void refreshLiveArtifacts().then(() => {
-            if (ev.action !== 'deleted') requestOpenFile(liveArtifactTabId(ev.artifactId));
+            if (ev.action !== 'deleted' && !userTookOverPreviewRef.current) {
+              completionSelectedAutoOpen = true;
+              requestOpenFile(liveArtifactTabId(ev.artifactId));
+            }
           });
           onProjectsRefresh();
           return;
@@ -9649,6 +9816,8 @@ export function ProjectView({
       );
       const cancelController = new AbortController();
       let authoritativeArtifactPaths: string[] | undefined;
+      // onDone is delivered for a canceled run too; onRunStatus says which.
+      let runReportedCanceled = false;
       abortRef.current = controller;
       cancelRef.current = cancelController;
       const handlers = {
@@ -9781,9 +9950,7 @@ export function ProjectView({
               true,
               { telemetryFinalized: true },
             );
-            if (runCommentAttachments.length > 0) {
-              void patchAttachedStatuses(runCommentAttachments, 'failed');
-            }
+            releaseCommentsAfterUnsuccessfulRun(runSavedComments);
             const ownsCurrentRun = clearCurrentRunStreamingMarker(
               runConversationId,
               controller,
@@ -9830,7 +9997,9 @@ export function ProjectView({
               && latestRunMessage?.id === assistantId;
           };
           if (finalizingRunId) finalizingLocalRunIdsRef.current.add(finalizingRunId);
-          if (runCommentAttachments.length > 0) {
+          if (runReportedCanceled) {
+            releaseCommentsAfterUnsuccessfulRun(runSavedComments);
+          } else if (runCommentAttachments.length > 0) {
             void patchAttachedStatuses(runCommentAttachments, 'needs_review');
           }
           const ownsCurrentRun = clearCurrentRunStreamingMarker(
@@ -9940,7 +10109,7 @@ export function ProjectView({
               // `turnArtifacts.focused` is byte-for-byte the old
               // `selectAutoOpenTurnArtifact` answer, so the focused tab below
               // is decided exactly as it was before; only `.open` is new.
-              const turnArtifacts = selectAutoOpenTurnArtifacts(produced, nextFiles, {
+              const turnArtifacts = withLiveArtifactDeliveries(selectAutoOpenTurnArtifacts(produced, nextFiles, {
                 ...autoOpenArtifactOptions,
                 preTurnFileNames: beforeFileNames,
                 turnStartedAt: startedAt,
@@ -9954,9 +10123,11 @@ export function ProjectView({
                   project.id,
                   projectDetail.resolvedDir,
                 ),
-              });
+              }), latestAssistantMsg.events);
               const turnArtifactToOpen = turnArtifacts.focused;
-              const producedArtifactToOpen = selectAutoOpenProducedArtifact(
+              const producedArtifactToOpen = turnArtifactToOpen && isLiveArtifactTabId(turnArtifactToOpen)
+                ? turnArtifactToOpen
+                : selectAutoOpenProducedArtifact(
                 [
                   ...provenTraceTouchedFiles(),
                   ...(turnArtifactToOpen
@@ -10017,9 +10188,7 @@ export function ProjectView({
               });
               if (deliveryOutcome === 'no_result' || deliveryOutcome === 'delivery_failed') {
                 setError(artifactPersistenceError ?? DESIGN_RESULT_MISSING_DETAIL);
-                if (runCommentAttachments.length > 0) {
-                  void patchAttachedStatuses(runCommentAttachments, 'failed');
-                }
+                releaseCommentsAfterUnsuccessfulRun(runSavedComments);
               }
               await auditDesignSystemWorkspaceAfterRun(assistantId);
             } finally {
@@ -10082,6 +10251,14 @@ export function ProjectView({
           if (config.mode === 'daemon' && !currentRunId) {
             if (runMayFinalize) {
               setError(null);
+              if (errorCode === 'CONVERSATION_NOT_FOUND') {
+                setProjectActionsToast({
+                  message: t('chat.sendTargetMissing'),
+                  details: null,
+                  tone: 'error',
+                  scope: 'chat-pane',
+                });
+              }
               activeCompletionNotificationRunsRef.current.delete(assistantId);
               setConversations((current) =>
                 current.map((conversation) => {
@@ -10111,9 +10288,7 @@ export function ProjectView({
                 if (failedUser) persistMessage(failedUser);
                 return next;
               });
-              if (runCommentAttachments.length > 0) {
-                void patchAttachedStatuses(runCommentAttachments, 'failed');
-              }
+              releaseCommentsAfterUnsuccessfulRun(runSavedComments);
             }
             clearTraceTouchedFilePaths();
             clearCurrentRunStreamingMarker(
@@ -10147,9 +10322,7 @@ export function ProjectView({
                 : prev.runStatus,
               resumable,
             }));
-            if (runCommentAttachments.length > 0) {
-              void patchAttachedStatuses(runCommentAttachments, 'failed');
-            }
+            releaseCommentsAfterUnsuccessfulRun(runSavedComments);
           }
           // Mark the run as completed in the reattach registry so that
           // attachRecoverableRuns does not race it after streaming ends.
@@ -10457,6 +10630,8 @@ export function ProjectView({
           sessionMode: runSessionMode,
           appliedPluginSnapshotId:
             meta?.appliedPluginSnapshotId ?? meta?.appliedPluginSnapshot?.snapshotId ?? null,
+          pluginId: meta?.appliedPluginSnapshot?.pluginId,
+          pluginInputs: meta?.appliedPluginSnapshot?.inputs,
           research: meta?.research,
           mediaExecution: mediaExecutionPolicyForProjectMetadata(project.metadata),
           model: daemonByokOpenCode ? config.model : choice?.model ?? null,
@@ -10564,6 +10739,7 @@ export function ProjectView({
             // no assistant run to finalize or persist; onError moves the failure
             // to the user row instead.
             if (!currentRunId && runStatus === 'failed') return;
+            runReportedCanceled = runStatus === 'canceled';
             const endedAt = isTerminalRunStatus(runStatus) ? Date.now() : undefined;
             const runMayFinalize =
               !supersededRunsRef.current.has(controller);
@@ -10703,6 +10879,8 @@ export function ProjectView({
           sessionMode: runSessionMode,
           appliedPluginSnapshotId:
             meta?.appliedPluginSnapshotId ?? meta?.appliedPluginSnapshot?.snapshotId ?? null,
+          pluginId: meta?.appliedPluginSnapshot?.pluginId,
+          pluginInputs: meta?.appliedPluginSnapshot?.inputs,
           research: meta?.research,
           mediaExecution: mediaExecutionPolicyForProjectMetadata(project.metadata),
           model: config.model,
@@ -10794,6 +10972,7 @@ export function ProjectView({
             }));
           },
           onRunStatus: (runStatus) => {
+            runReportedCanceled = runStatus === 'canceled';
             const endedAt = isTerminalRunStatus(runStatus) ? Date.now() : undefined;
             const runMayFinalize = !supersededRunsRef.current.has(controller);
             // 见 CLI / AMR 路径同名回调:落终态就把重连那一行让出去。
@@ -10861,6 +11040,7 @@ export function ProjectView({
       persistMessageById,
       auditDesignSystemWorkspaceAfterRun,
       patchAttachedStatuses,
+      releaseCommentsAfterUnsuccessfulRun,
       updateMessageById,
       markStreamingConversation,
       observeMemoryRun,
@@ -11032,6 +11212,22 @@ export function ProjectView({
       controller.abort();
     }
     reattachControllersRef.current.clear();
+    // Stopping aborts the stream, so the stopped turn never reports a terminal
+    // status of its own. Release ONLY the in-flight run's comments: queued
+    // sends (including one being prioritized by "send now") also hold their
+    // attachments in 'applying', and those must stay reserved — the run that
+    // drains them re-applies them. The in-flight run's comments are exactly
+    // the 'applying' ones not owned by any queued send.
+    const queuedCommentIds = new Set(
+      queuedChatSendsRef.current.flatMap((send) =>
+        send.commentAttachments.map((attachment) => attachment.id),
+      ),
+    );
+    releaseCommentsAfterUnsuccessfulRun(
+      previewCommentsRef.current.filter(
+        (comment) => comment.status === 'applying' && !queuedCommentIds.has(comment.id),
+      ),
+    );
     setStreaming(false);
     streamingConversationIdRef.current = null;
     setStreamingConversationId(null);
@@ -11048,6 +11244,7 @@ export function ProjectView({
     onProjectsRefresh,
     persistMessage,
     projectDetail.refresh,
+    releaseCommentsAfterUnsuccessfulRun,
     requestOpenFile,
     refreshWorkspaceItems,
   ]);
@@ -11061,6 +11258,24 @@ export function ProjectView({
     if (!target) return;
     setSlideNavRequest({ name: target.filePath, slideIndex: target.slideIndex, nonce: Date.now() });
   }, []);
+
+  // Starts a queued send. One that ends without a run stays in the queue, but
+  // no longer holds its comments.
+  const startQueuedChatSend = useCallback(async (item: QueuedChatSend): Promise<boolean> => {
+    let started = false;
+    try {
+      started = await handleSend(
+        item.prompt,
+        item.attachments,
+        item.commentAttachments,
+        { ...(item.meta ?? {}), queueDrain: true },
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    if (!started) releaseCommentsOfSendWithoutRun(item);
+    return started;
+  }, [handleSend, releaseCommentsOfSendWithoutRun]);
 
   const sendQueuedChatSendNow = useCallback((id: string) => {
     const item = queuedChatSendsRef.current.find((candidate) => candidate.id === id);
@@ -11082,56 +11297,17 @@ export function ProjectView({
       for (const controller of reattachControllersRef.current.values()) {
         supersededRunsRef.current.add(controller);
       }
-      // The interrupted turn moved its preview-comment attachments to
-      // 'applying' when it started; since we now suppress its terminal
-      // callbacks, reset them to 'open' so they don't stay stuck mid-apply.
-      // Reset ONLY the in-flight run's comments: queued sends (including the
-      // one being prioritized) also hold their attachments in 'applying', and
-      // those must stay reserved — the replacement run re-applies them. The
-      // in-flight run's comments are exactly the 'applying' ones not owned by
-      // any queued send.
-      const queuedCommentIds = new Set(
-        queuedChatSendsRef.current.flatMap((send) =>
-          send.commentAttachments.map((attachment) => attachment.id),
-        ),
-      );
-      const stuckApplying = previewCommentsRef.current.filter(
-        (comment) => comment.status === 'applying' && !queuedCommentIds.has(comment.id),
-      );
-      if (stuckApplying.length > 0) {
-        const resetIds = new Set(stuckApplying.map((comment) => comment.id));
-        commitPreviewComments((current) =>
-          current.map((comment) =>
-            resetIds.has(comment.id) ? { ...comment, status: 'open' } : comment,
-          ),
-        );
-        void Promise.all(
-          stuckApplying.map((comment) =>
-            patchPreviewCommentStatus(
-              project.id,
-              comment.conversationId,
-              comment.id,
-              'open',
-              projectRunWorkspaceContext,
-            ),
-          ),
-        ).catch(() => {});
-      }
+      // handleStop releases the interrupted turn's comments back to 'open'.
       prioritizeQueuedChatSend(id);
       handleStop();
       return;
     }
     void (async () => {
       armSlideNavForQueuedSend(item);
-      const started = await handleSend(
-        item.prompt,
-        item.attachments,
-        item.commentAttachments,
-        { ...(item.meta ?? {}), queueDrain: true },
-      );
+      const started = await startQueuedChatSend(item);
       if (started) removeQueuedChatSend(id);
     })();
-  }, [armSlideNavForQueuedSend, commitPreviewComments, currentConversationBusy, handleSend, handleStop, prioritizeQueuedChatSend, project.id, removeQueuedChatSend, projectRunWorkspaceContext]);
+  }, [armSlideNavForQueuedSend, currentConversationBusy, handleStop, prioritizeQueuedChatSend, removeQueuedChatSend, startQueuedChatSend]);
 
   /*
    * B11 「引导对话」 —— 队列行领头那颗按钮走的就是上面的
@@ -11186,12 +11362,7 @@ export function ProjectView({
     startingQueuedChatSendIdRef.current = next.id;
     armSlideNavForQueuedSend(next);
     void (async () => {
-      const started = await handleSend(
-        next.prompt,
-        next.attachments,
-        next.commentAttachments,
-        { ...(next.meta ?? {}), queueDrain: true },
-      );
+      const started = await startQueuedChatSend(next);
       if (!started) {
         if (startingQueuedChatSendIdRef.current === next.id) {
           startingQueuedChatSendIdRef.current = null;
@@ -11213,7 +11384,7 @@ export function ProjectView({
     currentConversationBusy,
     queuedAutoStartTick,
     queuedChatSends,
-    handleSend,
+    startQueuedChatSend,
     removeQueuedChatSend,
     scheduleProjectTimeout,
   ]);
@@ -11423,11 +11594,27 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[],
       images: File[] = [],
     ): Promise<CommentSendResult> => {
+      const finish = (result: CommentSendResult): CommentSendResult => {
+        observeAnalytics(() => {
+          const submittedIds = savedCommentIds(commentAttachments) ?? [];
+          const returnedIds = new Set(result.commentIds);
+          trackProjectCommentSendResult(analytics.track, {
+            page_name: 'artifact',
+            area: 'comment_popover',
+            project_id: project.id,
+            project_kind: projectKindFromMetadataToTracking(project.metadata),
+            result: result.status,
+            submitted_comment_ids: submittedIds,
+            comment_ids: submittedIds.filter((id) => returnedIds.has(id)),
+          });
+        });
+        return result;
+      };
       if (currentConversationQueueDisabled) {
-        return { status: 'rejected', commentIds: [] };
+        return finish({ status: 'rejected', commentIds: [] });
       }
       if (commentAttachments.length === 0 && images.length === 0) {
-        return { status: 'rejected', commentIds: [] };
+        return finish({ status: 'rejected', commentIds: [] });
       }
       setWorkspaceFocused(false);
       setCommentInspectorActive(false);
@@ -11443,7 +11630,7 @@ export function ProjectView({
           projectRunWorkspaceContext,
         );
         if (result.uploaded.length !== images.length) {
-          return { status: 'rejected', commentIds: [] };
+          return finish({ status: 'rejected', commentIds: [] });
         }
         uploaded = result.uploaded;
       }
@@ -11451,10 +11638,10 @@ export function ProjectView({
         const queued = uploaded.length > 0
           ? await handleSend('', uploaded, [], { queueOnly: true, entryFrom: 'comment' })
           : false;
-        return {
+        return finish({
           status: queued ? 'queued' : 'rejected',
           commentIds: [],
-        };
+        });
       }
       const queuedCommentIds: string[] = [];
       for (let i = 0; i < commentAttachments.length; i++) {
@@ -11470,13 +11657,13 @@ export function ProjectView({
           { queueOnly: true, entryFrom: 'comment' },
         );
         if (!queued) {
-          return { status: 'rejected', commentIds: queuedCommentIds };
+          return finish({ status: 'rejected', commentIds: queuedCommentIds });
         }
         queuedCommentIds.push(commentAttachment.id);
       }
-      return { status: 'queued', commentIds: queuedCommentIds };
+      return finish({ status: 'queued', commentIds: queuedCommentIds });
     },
-    [handleSend, project.id, currentConversationQueueDisabled, projectRunWorkspaceContext],
+    [handleSend, project.id, project.metadata, analytics.track, currentConversationQueueDisabled, projectRunWorkspaceContext],
   );
   const commentQueueOnSend = currentConversationBusy && !currentConversationQueueDisabled;
 
@@ -11988,8 +12175,12 @@ export function ProjectView({
     projectMutationReadOnly,
   ]);
 
-  const handleSelectConversation = useCallback((id: string) => {
+  const handleSelectConversation = useCallback((id: string, measureNavigation = true) => {
     if (id === activeConversationId && failedMessagesConversationId !== id) return;
+    const navigationId = measureNavigation ? observeNavigation(() => navigationTiming.begin(
+      { kind: 'project', projectId: project.id, conversationId: activeConversationId },
+      { projectId: project.id, conversationId: id },
+    )) : null;
     setMessages([]);
     commitPreviewComments([]);
     setAttachedComments([]);
@@ -12016,7 +12207,11 @@ export function ProjectView({
         conversationId: id,
         fileName: openTabsState.active ?? null,
       },
-      { replace: true },
+      {
+        replace: true,
+        onCommit: () => { if (navigationId) observeNavigation(() => navigationTiming.commit(navigationId)); },
+        onCancel: reason => { if (navigationId) observeNavigation(() => navigationTiming.finish(navigationId, 'cancelled', reason)); },
+      },
     );
     setMessageLoadRetryNonce((nonce) => nonce + 1);
   }, [activeConversationId, commitPreviewComments, failedMessagesConversationId, project.id, openTabsState.active]);
@@ -12317,7 +12512,7 @@ export function ProjectView({
               ? retryPending.failedAssistantId : null,
             supersededErrorAssistantIds,
             onStop: handleStop,
-            onRemoveQueuedSend: removeQueuedChatSend,
+            onRemoveQueuedSend: discardQueuedChatSend,
             onUpdateQueuedSend: updateQueuedChatSend,
             onReorderQueuedSends: reorderCurrentConversationQueuedChatSends,
             // B11 「引导对话」: one button, always offered. The handler already
@@ -12345,7 +12540,7 @@ export function ProjectView({
       handleComposerSend,
       handleStop,
       messages,
-      removeQueuedChatSend,
+      discardQueuedChatSend,
       reorderCurrentConversationQueuedChatSends,
       sendQueuedChatSendNow,
       updateQueuedChatSend,
@@ -12616,7 +12811,11 @@ export function ProjectView({
   const handleArtifactShare = useCallback(
     (fileName: string, anchorId?: string) => {
       requestOpenFile(fileName);
-      setShareRequest({ name: fileName, nonce: Date.now(), ...(anchorId ? { anchorId } : {}) });
+      setShareRequest((previous) => ({
+        name: fileName,
+        nonce: nextShareRequestNonce(previous?.nonce, Date.now()),
+        ...(anchorId ? { anchorId } : {}),
+      }));
     },
     [requestOpenFile],
   );
@@ -12941,7 +13140,11 @@ export function ProjectView({
     let isAutoSend = false;
     let amrGateWitness: AmrBalanceGateScope | undefined;
     try {
-      isAutoSend = Boolean(
+      // A Home send mounts this view before App has written the auto-send
+      // keys (they follow the create and the uploads, OPEND-3334). Its prompt
+      // is the first message, never a composer draft; the dispatch below
+      // still waits for the flag and re-reads the session values live.
+      isAutoSend = creationHandoff !== null || Boolean(
         window.sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
       );
       amrGateWitness = readAutoSendAmrGateWitness(project.id);
@@ -12953,7 +13156,7 @@ export function ProjectView({
       ? amrGateWitness
       : undefined;
     autoSendSeedRef.current = isAutoSend
-      ? (readAutoSendPrompt(project.id) ?? project.pendingPrompt ?? '')
+      ? (readAutoSendPrompt(project.id) ?? creationHandoff?.prompt ?? project.pendingPrompt ?? '')
       : '';
     autoSendAttachmentsRef.current = isAutoSend ? readAutoSendAttachments(project.id) : [];
     autoSendContextRef.current = isAutoSend ? readAutoSendContext(project.id) : null;
@@ -12987,6 +13190,8 @@ export function ProjectView({
       : { projectId: project.id, value: project.pendingPrompt },
   );
   useEffect(() => {
+    // Clearing it is a write to the project row, which does not exist yet.
+    if (projectReadsHeld) return;
     const pendingPrompt = project.pendingPrompt;
     if (!pendingPrompt) return;
     if (autoSendFirstMessageRef.current) {
@@ -13000,7 +13205,7 @@ export function ProjectView({
         : { projectId: project.id, value: pendingPrompt },
     );
     onClearPendingPrompt();
-  }, [project.id, project.pendingPrompt, onClearPendingPrompt]);
+  }, [project.id, project.pendingPrompt, projectReadsHeld, onClearPendingPrompt]);
   const chatInitialDraft =
     chatSeed?.value ??
     (
@@ -13082,7 +13287,7 @@ export function ProjectView({
           returnedConversationId !== activeConversationId
           || failedMessagesConversationId === returnedConversationId
         ) {
-          handleSelectConversation(returnedConversationId);
+          handleSelectConversation(returnedConversationId, false);
         } else {
           scheduleConversationMessageRefresh(returnedConversationId);
         }
@@ -13403,7 +13608,7 @@ export function ProjectView({
   // Continue in CLI / Finalize design package handlers + keyboard
   // shortcut wiring. Close to the JSX so the data flow is easy to
   // trace from the toolbar back to its sources.
-  const handleFinalize = useCallback(() => {
+  const _handleFinalize = useCallback(() => {
     const request = buildFinalizeRequest(config);
     if (!request) {
       setProjectActionsToast(buildFinalizeCredentialsMissingToast(config));
@@ -13414,7 +13619,7 @@ export function ProjectView({
     });
   }, [finalize, config, designMdState]);
 
-  const handleCancelFinalize = useCallback(() => {
+  const _handleCancelFinalize = useCallback(() => {
     finalize.cancel();
   }, [finalize]);
 
@@ -13572,16 +13777,59 @@ export function ProjectView({
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
   }, [designMdState.exists, handleContinueInCli]);
 
-  // OPEND-2170: the hand-off card App keeps over this column comes down only
-  // once the column has something real to show — the auto-sent turn painted,
-  // or a transcript that is loaded and has nothing to send, or a load that
-  // failed (the error surface is the real thing then). Fired once per mount;
-  // App owns the fallback deadline, so a send parked behind a gate dialog
-  // cannot pin the card forever.
-  const creationHandoffActive = creationHandoff !== null;
+  // The optimistic first turn of a Home send belongs to this view, not to
+  // App's creation record (OPEND-3334). It is captured at mount and retired
+  // only when the column no longer needs it: the real turn owns the rows, the
+  // auto-send was turned down, or nothing is going to be sent. App's record
+  // has its own cleanup deadline; tying the turn to it made the turn vanish
+  // whenever the Home uploads outlived that deadline, and come back when
+  // they finished.
+  const [optimisticFirstTurn, setOptimisticFirstTurn] = useState<{
+    prompt: string;
+    files?: readonly File[];
+  } | null>(() => (creationHandoff
+    ? { prompt: creationHandoff.prompt, files: creationHandoff.files }
+    : null));
+  // The seed conversation's id, minted with the project. Kept for the life of
+  // the view: the pane is keyed by it from the first frame, so the
+  // conversation list answering (or the record being released) never re-keys
+  // it.
+  const [seedConversationId] = useState(() => creationHandoff?.conversationId ?? null);
+  // Until the auto-sent turn is on screen the transcript is empty, but the
+  // turn's first frame is already known: ChatPane draws it from these two
+  // optimistic messages with its own components, so the real turn takes over
+  // the same rows (OPEND-3334). Any real message wins at once.
+  const creationHandoffMessageIds = useMemo(() => {
+    const identity = homeAutoSendIdentity(project.id);
+    return { user: identity.userMessageId!, assistant: identity.assistantMessageId! };
+  }, [project.id]);
+  const creationHandoffMessages = useCreationHandoffMessages(
+    optimisticFirstTurn,
+    selectedAssistantIdentity,
+    creationHandoffMessageIds,
+  );
+  const creationHandoffTurnShown = optimisticFirstTurn !== null && messages.length === 0;
+  const chatPaneConversationKey =
+    activeConversationId
+    ?? seedConversationId
+    ?? 'conversation-unavailable';
+  // A project born from the Home send starts with no files, and the pending
+  // frame already drew the empty state. Keep drawing it (inert) until the
+  // first listing is accepted instead of flipping to "Loading…" in between;
+  // the authority gate itself is untouched, so no CTA acts before that read
+  // (Home attachments are still uploading then). An imported working folder
+  // may hold files, so it keeps the honest loading state.
+  const [emptyLookBeforeFirstListing] = useState(
+    () => creationHandoff !== null && !project.metadata?.baseDir,
+  );
+  const ignoreStopBeforeFirstRun = useCallback(() => undefined, []);
+  // OPEND-2170: the first turn is settled once the column has something real
+  // to show — the auto-sent turn painted, a loaded transcript with nothing to
+  // send, or a load that failed (the error surface is the real thing then).
+  // Then the optimistic turn retires and App may release its record.
   const creationHandoffSettledRef = useRef(false);
   useEffect(() => {
-    if (!creationHandoffActive || creationHandoffSettledRef.current) return;
+    if (optimisticFirstTurn === null || creationHandoffSettledRef.current) return;
     const transcriptLoaded =
       Boolean(activeConversationId)
       && messagesConversationId === activeConversationId
@@ -13600,20 +13848,38 @@ export function ProjectView({
       );
     if (!(transcriptFailed || (transcriptLoaded && (firstTurnPainted || nothingToSend)))) return;
     creationHandoffSettledRef.current = true;
+    setOptimisticFirstTurn(null);
     onCreationHandoffSettled?.(project.id);
   }, [
     activeConversationId,
     conversationLoadError,
-    creationHandoffActive,
     failedMessagesConversationId,
     homeAttachmentUploads.length,
     messages.length,
     messagesConversationId,
     messagesInitialized,
     onCreationHandoffSettled,
+    optimisticFirstTurn,
     project.id,
     projectIsProgrammaticBrandExtraction,
   ]);
+  // App released its record without the first turn settling here. The turn
+  // still stands while the Home uploads are going up (the send follows them)
+  // or while the auto-send keys are written (the send is coming). With
+  // neither, nothing will be sent — e.g. the working-directory hand-off
+  // failed after the create — and the turn must not stand as "Working".
+  useEffect(() => {
+    if (optimisticFirstTurn === null || creationHandoff !== null) return;
+    if (homeAttachmentUploads.length > 0) return;
+    let sendPending = false;
+    try {
+      sendPending = Boolean(window.sessionStorage.getItem(autoSendFirstMessageKey(project.id)));
+    } catch {
+      sendPending = false;
+    }
+    if (sendPending) return;
+    setOptimisticFirstTurn(null);
+  }, [creationHandoff, homeAttachmentUploads.length, optimisticFirstTurn, project.id]);
 
   // PluginLoopHome auto-send: when the user submits on Home, app.tsx
   // sets `sessionStorage['od:auto-send-first:<projectId>']` and routes
@@ -13688,6 +13954,15 @@ export function ProjectView({
     if (!seed && attachments.length === 0) {
       return;
     }
+    // A view mounted from the click read no witness (App writes it after the
+    // create); read it now so Home's gate decision is still reused.
+    if (autoSendAmrGateWitnessRef.current === undefined) {
+      try {
+        autoSendAmrGateWitnessRef.current = readAutoSendAmrGateWitness(project.id);
+      } catch {
+        /* sessionStorage may be unavailable; handleSend runs its own gate. */
+      }
+    }
     const autoSendGateStillMatches =
       autoSendAmrGateWitnessRef.current !== undefined &&
       amrBalanceGateScopesMatch(
@@ -13705,6 +13980,10 @@ export function ProjectView({
       })
       .then((accepted) => {
         if (!accepted) {
+          // The turn was turned down (a preflight block, a scope transition):
+          // the optimistic turn must not keep claiming it is running. A later
+          // retry paints the real turn itself.
+          setOptimisticFirstTurn(null);
           // The handoff was not accepted (for example a transient project
           // scope/conversation transition or a recoverable preflight block).
           // Keep every session value intact; a later dependency change can
@@ -13721,6 +14000,7 @@ export function ProjectView({
         autoSendInFlightRef.current = false;
       })
       .catch(() => {
+        setOptimisticFirstTurn(null);
         // `handleSend` normally reports a rejected preflight as `false`, but
         // transport/provider setup may still throw. Preserve the handoff for a
         // later retry instead of silently consuming the user's first prompt.
@@ -13821,12 +14101,9 @@ export function ProjectView({
     </>
   );
 
-  // The `.app` shell belongs to the caller, not to this component. App.tsx
-  // renders the same `div.app` around both this view and
-  // ProjectCreationPendingView so React reconciles one element across the
-  // hand-off. Owning the shell here would make each view mount its own
-  // element and replay the `.app` entrance animation, which reads as the
-  // project frame flashing twice on the way in from Home.
+  // The `.app` shell belongs to the caller, not to this component: App.tsx
+  // owns the `div.app` around every project-route surface, so switching
+  // between them never replays the `.app` entrance animation.
   return (
     <CollabProvider value={collabValue}>
       <CritiqueTheaterMount
@@ -13844,12 +14121,17 @@ export function ProjectView({
           resizingChatPanel && !workspaceFocused ? 'is-resizing-chat' : '',
         ].filter(Boolean).join(' ')}
         style={projectSplitStyle(workspaceFocused, splitLeftPanelWidth, workspacePanelTrack)}
+        // A Home send's creation phase, for tests and diagnostics: `pending`
+        // while the project row does not exist yet (reads held), `persisted`
+        // until the first transcript settles, absent otherwise.
+        data-creation-phase={
+          creationHandoff ? (creationHandoff.persisted ? 'persisted' : 'pending') : undefined
+        }
       >
         <div
           className={[
             'split-chat-slot',
             chatSlotHidden ? 'split-chat-slot-hidden' : '',
-            creationHandoffActive ? 'split-chat-slot--creation-handoff' : '',
           ].filter(Boolean).join(' ')}
           aria-hidden={chatSlotHidden || undefined}
         >
@@ -13884,16 +14166,23 @@ export function ProjectView({
               </button>
             </div>
           ) : null}
-          {activeConversationId || conversationLoadError || emptyConversationReadOnlySettled ? (
+          {activeConversationId || conversationLoadError || emptyConversationReadOnlySettled || seedConversationId !== null ? (
             <ChatPane
               historyPortalTarget={historyPortalTarget}
-              composerLayerHidden={creationHandoffActive}
               // The conversation id is part of the key so switching conversations
               // resets internal scroll/draft state inside ChatPane and ChatComposer.
-              key={`${project.id}:${activeConversationId ?? 'conversation-unavailable'}:${chatSeed?.id ?? 'ready'}`}
-              messages={messages}
-              streaming={currentConversationControlStreaming}
-              loading={currentConversationLoading}
+              key={`${project.id}:${chatPaneConversationKey}:${chatSeed?.id ?? 'ready'}`}
+              // The optimistic first turn carries the auto-send's ids, so the
+              // real rows take over these rows in place (OPEND-3334).
+              messages={creationHandoffTurnShown ? creationHandoffMessages : messages}
+              // The optimistic turn is a running turn: the composer shows the
+              // same stop control the auto-sent turn will, so it does not swap
+              // at the hand-off. There is no run to stop yet.
+              streaming={currentConversationControlStreaming || creationHandoffTurnShown}
+              // The optimistic turn is the column's content while the first
+              // transcript loads; a skeleton under it would be a second
+              // loading form (OPEND-2170).
+              loading={currentConversationLoading && !creationHandoffTurnShown}
               // A read-only viewer of a team-shared project cannot drive artifact
               // changes through chat (comments go through the separate overlay).
               // Home's own prompt has not gone out yet — it is waiting for this
@@ -13970,12 +14259,12 @@ export function ProjectView({
               onConsumeAmrAuthRetryContinuation={onConsumeAmrAuthRetryContinuation}
               onDiscardAmrAuthRetryContinuation={onDiscardAmrAuthRetryContinuation}
               onResumeRun={handleResumeRun}
-              onStop={handleStop}
+              onStop={creationHandoffTurnShown ? ignoreStopBeforeFirstRun : handleStop}
               // 组件 22 · 重连 · S29:掉线时流水的最后一行。按当前会话过一道 ——
               // 后台重挂可能发生在别的会话上,那一行不该串进这一屏。
               reconnect={reconnectViewForConversation(reconnectView, activeConversationId)}
               onManualReconnect={handleManualReconnect}
-              onRemoveQueuedSend={removeQueuedChatSend}
+              onRemoveQueuedSend={discardQueuedChatSend}
               onUpdateQueuedSend={updateQueuedChatSend}
               onReorderQueuedSends={reorderCurrentConversationQueuedChatSends}
               onSendQueuedNow={sendQueuedChatSendNow}
@@ -14117,7 +14406,9 @@ export function ProjectView({
               // The Home batch, drawn from the local bytes while it uploads.
               // Same tray, same cards, same "uploading" treatment the composer
               // already gives files picked from inside the project.
-              homeAttachmentUploads={homeAttachmentUploads}
+              // The optimistic turn already shows the staged files as the
+              // message's attachments; the tray would show them twice.
+              homeAttachmentUploads={creationHandoffTurnShown ? undefined : homeAttachmentUploads}
               onDismissHomeAttachmentUpload={(cardId) =>
                 dismissHomeAttachmentUpload(project.id, cardId)}
               chatLogTray={
@@ -14175,22 +14466,11 @@ export function ProjectView({
                 />
               )}
             />
-          ) : creationHandoffActive ? null : (
+          ) : (
             <div className="pane" data-testid="chat-pane-loading">
               <CenteredLoader />
             </div>
           )}
-          {creationHandoff ? (
-            /* The hand-off card stays the column's visible pane until the
-               first transcript settles; ChatPane above keeps its layout
-               hidden underneath (see `.split-chat-slot--creation-handoff`). */
-            <ProjectCreationPendingChat
-              projectName={project.name}
-              prompt={creationHandoff.prompt}
-              files={creationHandoff.files}
-              agentId={config.agentId}
-            />
-          ) : null}
         </div>
         {/* The comment panel is a floating card over the workspace in EVERY
             state (per product: 任何状态下评论卡片都在这个位置). It used to dock
@@ -14231,6 +14511,8 @@ export function ProjectView({
           viewerOnly={projectMutationReadOnly}
           materializationPending={projectCollab.materializationPending}
           filesAuthoritative={committedFilesGeneration > 0}
+          emptyLookBeforeFirstListing={emptyLookBeforeFirstListing}
+          projectReadsHeld={projectReadsHeld}
           readonlyNotice={
             projectCollab.materializationPending
               ? t('designFiles.syncing')
@@ -14252,6 +14534,12 @@ export function ProjectView({
           filesGeneration={committedFilesGeneration}
           onRefreshFiles={refreshFileWorkspace}
           onManualFileWritten={recordManualFileWrite}
+          onObservedPublicShareLink={onObservedPublicShareLink}
+          observedPublicShareLink={observedPublicShareLink}
+          loginUpdateRequest={loginUpdateRequest}
+          onLoginUpdateRequestHandled={onLoginUpdateRequestHandled}
+          shareLoginReturn={shareLoginReturn}
+          onShareLoginReturnChange={onShareLoginReturnChange}
           isDeck={isDeck}
           streaming={currentConversationActionDisabled}
           // The building preview needs a real run, not the disabled-actions
@@ -14261,6 +14549,7 @@ export function ProjectView({
           runInFlight={currentConversationStreaming || currentConversationHasActiveRun}
           commentQueueOnSend={commentQueueOnSend}
           commentSendDisabled={currentConversationQueueDisabled}
+          routeFileName={routeFileName}
           openRequest={openRequest}
           browserOpenRequest={browserOpenRequest}
           pinnedBrowserTabId={projectIsProgrammaticBrandExtraction ? BRAND_BROWSER_TAB_ID : null}
@@ -14697,7 +14986,7 @@ function normalizeProjectFileName(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
 }
 
-function assistantAgentDisplayName(
+function _assistantAgentDisplayName(
   agentId: string | null,
   fallbackName?: string,
 ): string | undefined {
