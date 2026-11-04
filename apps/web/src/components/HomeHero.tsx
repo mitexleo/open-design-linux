@@ -65,6 +65,7 @@ import {
   type InlineMentionEntity,
 } from '../utils/inlineMentions';
 import { useI18n, useT } from '../i18n';
+import { localizePluginInputLabel } from '../i18n/plugin-content';
 import { localizeHomePresetTitle, localizePluginDescription, localizePluginTitle } from './plugins-home/localization';
 import {
   examplePresetSeedPrompt,
@@ -91,6 +92,7 @@ import { ContextChipHoverCard } from './ContextChipHoverCard';
 import { workspaceContextDetailLine, workspaceContextKindLabel } from './workspace-context';
 import { FigmaHelpModal } from './FigmaHelpModal';
 import { TemplatePicker } from './home-hero/TemplatePicker';
+import { TypePillRow } from './home-hero/TypePillRow';
 import { LibraryPicker } from './LibraryPicker';
 import { assetTitle } from './LibraryAssetMeta';
 import { libraryAssetRawUrl } from '../providers/registry';
@@ -136,6 +138,7 @@ export interface ExamplePromptInfo {
 }
 
 interface Props {
+  inviteSurface?: ReactNode;
   workspaceContext?: WorkspaceCollabContext | null;
   active?: boolean;
   // Arms the first-run guidance trail (prototype chip → first preset
@@ -353,6 +356,7 @@ const EMPTY_WORKSPACE_ITEMS: WorkspaceContextItem[] = [];
 export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   {
     workspaceContext = null,
+    inviteSurface,
     active = true,
     prompt,
     onPromptChange,
@@ -440,7 +444,6 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   const isDock = variant === 'dock';
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mentionTab, setMentionTab] = useState<HomeMentionTab>('all');
-  const [hoveredPlugin, setHoveredPlugin] = useState<InstalledPluginRecord | null>(null);
   const [dragActive, setDragActive] = useState(false);
   // Border beam on the prompt card (styles/home/composer-beam.css). Mirrors
   // border-beam's own active/fading contract so blur fades the light out over
@@ -937,10 +940,6 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   }, [selectedIndex, visiblePickerOptions.length]);
 
   useEffect(() => {
-    if (!pickerOpen) setHoveredPlugin(null);
-  }, [pickerOpen]);
-
-  useEffect(() => {
     if (!pickerOpen) return;
     const isInsideMentionSurface = (target: EventTarget | null) => {
       if (!(target instanceof Node)) return false;
@@ -1254,7 +1253,6 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   function dismissMentionPicker() {
     setMentionTrigger(null);
     setMentionTab('all');
-    setHoveredPlugin(null);
     setSelectedIndex(0);
   }
 
@@ -1511,7 +1509,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
      rather than hard-coding a lead/tail pair per language. The nouns reuse the
      composer's own type labels, so the headline can never name a kind the type
      row does not offer. */
-  const titleTemplate = t('homeHero.title');
+  const titleTemplate = activeChipId ? t('homeHero.title') : t('homeHero.titleUnselected');
   const titleSlotIndex = titleTemplate.indexOf(TITLE_WORD_SLOT);
   const titleParts =
     titleSlotIndex === -1
@@ -1559,6 +1557,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
         isDock && ((carouselActive && !composerFocused) || forcedCollapsed) ? 'true' : undefined
       }
     >
+      {isDock ? null : inviteSurface}
       {/* Hero header: one plain question. The animated pixel-scan wordmark that
           used to stand here is gone (per product) — the headline carries the
           moment instead, with no motion behind it. */}
@@ -1575,7 +1574,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
           <h1
             className={
               'home-hero__title' +
-              (endsWithFullWidthPunctuation(t('homeHero.title'))
+              (endsWithFullWidthPunctuation(titleTemplate)
                 ? ' home-hero__title--optical-trim'
                 : '')
             }
@@ -1593,7 +1592,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                 {titleParts.tail}
               </>
             ) : (
-              t('homeHero.title')
+              titleTemplate
             )}
           </h1>
           {/* One quiet line under the headline (per product). */}
@@ -2107,10 +2106,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                         className={`home-hero__plugin-option${
                           optionIndex === selectedIndex ? ' is-active' : ''
                         }`}
-                        onMouseEnter={() => {
-                          setSelectedIndex(optionIndex);
-                          setHoveredPlugin(item.pluginRecord ?? null);
-                        }}
+                        onMouseEnter={() => setSelectedIndex(optionIndex)}
                         onMouseDown={(event) => {
                           event.preventDefault();
                           if (!item.disabled) item.onPick();
@@ -2132,36 +2128,6 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   })}
                 </div>
               ))}
-              {hoveredPlugin ? (
-                <div
-                  className="home-hero__plugin-hover-card"
-                  data-testid="home-hero-plugin-hover-card"
-                >
-                  <div>
-                    <span className="home-hero__plugin-hover-kicker">
-                      {getPluginSourceLabel(hoveredPlugin)}
-                    </span>
-                    <strong>{localizePluginTitle(locale, hoveredPlugin)}</strong>
-                    <p>{localizePluginDescription(locale, hoveredPlugin) || hoveredPlugin.id}</p>
-                  </div>
-                  <div className="home-hero__plugin-hover-meta">
-                    <span>{t('homeHero.parameters', { n: (hoveredPlugin.manifest?.od?.inputs ?? []).length })}</span>
-                    {getPluginQueryPreview(hoveredPlugin) ? (
-                      <span>{getPluginQueryPreview(hoveredPlugin)}</span>
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      dismissMentionPicker();
-                      onOpenPluginDetails(hoveredPlugin);
-                    }}
-                  >
-                    {t('homeHero.details')}
-                  </button>
-                </div>
-              ) : null}
             </div>
           </div>
         </CaretFloatingLayer>
@@ -2352,13 +2318,14 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
             {/* Task type follows the two icon controls: it picks WHAT is being
                 made, and the pair before it answers "with what" / "in what
                 style". */}
-            <TemplatePicker
+            {activeChipId || isDock ? <TemplatePicker
               templates={templateChips}
               onPick={handlePickTaskChip}
+              onClear={onClearActiveChip}
               disabled={pluginsLoading || typeSelectionPending || pendingChipId !== null || pendingPluginId !== null}
               activeChipId={activeChipId}
               labelFor={(id) => homeHeroChipLabel(id, t)}
-            />
+            /> : null}
             {libraryPickerOpen ? (
               <LibraryPicker
                 onClose={() => setLibraryPickerOpen(false)}
@@ -2439,17 +2406,17 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
               disabled={!sendEnabled}
               // No tooltip: the arrow is the composer's only send affordance,
               // and the 运行 bubble landed on the prompt text right above it.
-              // Progress appears in the destination Chat frame, so this action
-              // never flashes a transient loading name/state before unmount.
-              aria-label={t('homeHero.run')}
-              aria-busy={false}
+              // Creation and preflight can outlast this frame. Keep the
+              // existing sending indicator until HomeView settles the submit.
+              aria-label={submitting ? t('chat.comments.sending') : t('homeHero.run')}
+              aria-busy={submitting}
             >
               {/* The supplied send mark: the glyph fills half of its 32 box in
                   the source file, and the icon carries that padding itself, so
                   it renders at the button's full size rather than inset —
                   which is why this tracks the disc (36, see
                   `.home-hero__submit`) instead of the file's own 32. */}
-              <Icon name="arrow-up-fill" size={36} />
+              <Icon name={submitting ? 'spinner' : 'arrow-up-fill'} size={submitting ? 17 : 36} />
             </button>
           </div>
         </div>
@@ -2586,6 +2553,16 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
           second filter strip between the composer and them re-asked a
           question the pill had just answered. The examples below now show the
           picked type's full set. */}
+
+      {!isDock && !activeChipId ? (
+        <TypePillRow
+          chips={templateChips}
+          activeChipId={null}
+          disabled={pluginsLoading || typeSelectionPending || pendingChipId !== null || pendingPluginId !== null}
+          labelFor={(id) => homeHeroChipLabel(id, t)}
+          onPick={handlePickTaskChip}
+        />
+      ) : null}
 
       {isDock ? null : recommendationSlot}
 
@@ -3171,7 +3148,10 @@ function FooterInputOption({
   onChange: (value: unknown) => void;
   t: ReturnType<typeof useT>;
 }) {
-  const label = footerInputLabel(field, t);
+  const { locale } = useI18n();
+  const label = field.label_i18n
+    ? localizePluginInputLabel(locale, field)
+    : footerInputLabel(field, t);
   if (field.name === 'speakerNotes') {
     const checked = footerSpeakerNotesEnabled(value);
     return (
@@ -3747,20 +3727,6 @@ function escapeRegExp(value: string): string {
 
 function getPluginSourceLabel(plugin: InstalledPluginRecord): string {
   return plugin.sourceKind === 'bundled' ? 'Official' : 'My plugin';
-}
-
-function getPluginQueryPreview(plugin: InstalledPluginRecord): string {
-  const raw = plugin.manifest?.od?.useCase?.query;
-  const value =
-    typeof raw === 'string'
-      ? raw
-      : raw && typeof raw === 'object' && !Array.isArray(raw)
-        ? raw.en ?? raw['zh-CN'] ?? Object.values(raw).find((entry): entry is string => (
-            typeof entry === 'string' && entry.length > 0
-          )) ?? ''
-        : '';
-  const trimmed = value.replace(/\s+/g, ' ').trim();
-  return trimmed.length > 96 ? `${trimmed.slice(0, 96)}…` : trimmed;
 }
 
 interface RailGroupProps {

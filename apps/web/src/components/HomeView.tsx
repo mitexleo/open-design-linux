@@ -279,6 +279,12 @@ interface Props {
   onSubmit: (
     payload: PluginLoopSubmit,
   ) => Promise<boolean | 'blocked' | void> | boolean | 'blocked' | void;
+  // EntryShell checks this local cancellation witness during async preflight.
+  // Existing local/plugin submit callbacks retain their single payload argument.
+  onSubmitWithDraftGuard?: (
+    payload: PluginLoopSubmit,
+    isSubmitCurrent: () => boolean,
+  ) => Promise<boolean | 'blocked' | void> | boolean | 'blocked' | void;
   onOpenProject: (id: string, fileName?: string) => void;
   onBrowseRegistry?: () => void;
   onOpenIntegrations?: () => void;
@@ -310,7 +316,7 @@ interface Props {
   }) => boolean | void | Promise<boolean | void>;
   onRecommendationDismiss?: () => void;
   executionSwitcher?: ReactNode;
-  artifactUpgradeSlot?: ReactNode;
+  inviteSurface?: ReactNode;
   deepSeekV4FlashCampaignAudience?: DeepSeekV4FlashCampaignAudience;
   /** Real model switch for the campaign modal's paid 立即使用 CTA (D5).
    *  EntryShell owns the agent/model persistence callbacks; HomeView only
@@ -503,6 +509,7 @@ export function HomeView({
   designSystemsLoading = false,
   defaultDesignSystemId = null,
   onSubmit,
+  onSubmitWithDraftGuard,
   onOpenProject,
   onBrowseRegistry,
   onOpenIntegrations,
@@ -519,7 +526,7 @@ export function HomeView({
   onRecommendationStart,
   onRecommendationDismiss,
   executionSwitcher,
-  artifactUpgradeSlot,
+  inviteSurface,
   deepSeekV4FlashCampaignAudience = 'unknown',
   onDeepSeekV4FlashCampaignUseNow,
   deepSeekV4FlashCampaignMetricsConsent = false,
@@ -835,6 +842,8 @@ export function HomeView({
   // Composer in-flight guard: disables the send button, shows Sending…, and
   // swallows repeat clicks across the whole async create tail.
   const [sending, setSending] = useState(false);
+  const submitDraftRef = useRef({ prompt, stagedFiles });
+  submitDraftRef.current = { prompt, stagedFiles };
   const [elevenLabsVoices, setElevenLabsVoices] = useState<AudioVoiceOption[]>([]);
   const [elevenLabsVoicesLoading, setElevenLabsVoicesLoading] = useState(false);
   // Live AIHubMix image catalogue merged into the home media composer's model
@@ -1975,37 +1984,8 @@ export function HomeView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingChipRestore, pluginsLoading, plugins, active, pendingPluginUseHandoff]);
 
-  // Seed only the page's first untouched visit. Restored drafts and host
-  // handoffs own their selection; a later clear must not re-run this default.
-  const [defaultTypeSettled, setDefaultTypeSettled] = useState(false);
-  const defaultTypePending = ownsComposerDraft && !defaultTypeSettled && !active;
-  useEffect(() => {
-    if (!ownsComposerDraft || defaultTypeSettled) return;
-    if (active || promptHandoff || pendingPluginUseHandoff || hasPendingHomeChip(variant)) {
-      setDefaultTypeSettled(true);
-      return;
-    }
-    if (pluginsLoading || pendingChipRestore) return;
-    setDefaultTypeSettled(true);
-    const chip = findChip('prototype');
-    if (chip?.action.kind !== 'apply-scenario') return;
-    const action = chip.action;
-    const record = plugins.find((plugin) => plugin.id === action.pluginId);
-    // A missing catalog entry must not lock the composer or invent a plugin.
-    // Explicit picks continue to report the normal missing-scenario error.
-    if (!record) return;
-    void usePlugin(record, undefined, {
-      chipId: chip.id,
-      projectKind: chip.action.projectKind,
-      inputs: chip.action.inputs,
-      projectMetadata: chip.action.projectMetadata ?? null,
-      suppressPromptUpdate: true,
-      focusPrompt: false,
-      deferApply: true,
-    });
-    // usePlugin reads this render's catalog/context; it is not an effect trigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownsComposerDraft, defaultTypeSettled, active, promptHandoff, pendingPluginUseHandoff, variant, pluginsLoading, pendingChipRestore, plugins]);
+  // Natural-language entry has no implicit task selection.
+  const defaultTypePending = false;
 
   function addPluginContext(record: InstalledPluginRecord, nextPrompt: string | null) {
     setSelectedPluginContexts((prev) => {
@@ -2820,6 +2800,9 @@ export function HomeView({
     // The send button disables itself while sending, but the Enter-to-send
     // path lands here directly — swallow re-entry during the in-flight window.
     if (sending || defaultTypePending) return;
+    const submittedDraft = { prompt, stagedFiles };
+    const isSubmitCurrent = () => submitDraftRef.current.prompt === submittedDraft.prompt
+      && submitDraftRef.current.stagedFiles === submittedDraft.stagedFiles;
     const trimmed = prompt.trim();
     if (!trimmed && stagedFiles.length === 0) return;
     // P0 ui_click area=chat_composer element=send_button. Fires before the
@@ -3007,7 +2990,7 @@ export function HomeView({
         examplePromptInfoRef.current != null && localStorage.getItem(examplePromptKey) == null
           ? examplePromptInfoRef.current
           : null;
-      const accepted = await onSubmit({
+      const payload: PluginLoopSubmit = {
         prompt: trimmed,
         pluginId: routedPluginId,
         ...(pluginSelectionProvenance ? { pluginSelectionProvenance } : {}),
@@ -3057,7 +3040,10 @@ export function HomeView({
         ...(contextLinkedDirs.length > 0 ? { linkedDirs: contextLinkedDirs } : {}),
         conversationMode: sessionMode,
         ...(examplePromptToSend ? { examplePromptContext: examplePromptToSend } : {}),
-      });
+      };
+      const accepted = onSubmitWithDraftGuard
+        ? await onSubmitWithDraftGuard(payload, isSubmitCurrent)
+        : await onSubmit(payload);
       if (accepted === false) {
         setError(t('home.createFailed'));
         return;
@@ -3147,6 +3133,7 @@ export function HomeView({
         />
       )}
       <HomeHero
+        inviteSurface={variant === 'dock' ? undefined : inviteSurface}
         variant={variant}
         collapseSignal={collapseSignal}
         workspaceContext={workspaceContext}
@@ -3271,7 +3258,6 @@ export function HomeView({
         // third way to say the same thing, wedged between the two. The
         // recommendation engine and `RecommendedStartRegion` are left intact;
         // only this mount point is gone.
-        recommendationSlot={artifactUpgradeSlot}
       />
 
       {/* No 最近项目 grid under the hero on EITHER branch (OPEND-2683, per

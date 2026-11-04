@@ -20,6 +20,12 @@
   min-height: 100%;
   justify-content: safe center;
 }
+/* Invitation Home shares the populated Home's top anchor. Example lists grow
+   below the composer without re-centering the invitation, title and input.
+   The dismissed row keeps the same anchor so closing it cannot shift them. */
+.home-view--centered:has([data-home-invite-row]) {
+  justify-content: flex-start;
+}
 /* `.home-hero`'s own fixed top padding (below) is tuned for the OTHER
    variant — hugging the top of the scroll column so a specific reference
    window's fold lines up with the recent-projects grid. `.home-view--centered`
@@ -29,7 +35,7 @@
    viewport's true center, reading as an oversized blank band above it. Drop
    it back to match the bottom padding so the hero's own box is symmetric and
    the flex centering does all of the vertical balancing. */
-.home-view--centered .home-hero {
+.home-view--centered:not(:has([data-home-invite-row])) .home-hero {
   padding-top: var(--spacing-4);
 }
 /* The hero block self-constrains to a readable column even though
@@ -1372,69 +1378,6 @@
   flex-direction: column;
   gap: 3px;
   overflow-y: auto;
-}
-.home-hero__plugin-hover-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px 14px;
-  align-items: center;
-  margin-top: 4px;
-  padding: 10px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--bg-subtle) 72%, var(--bg-panel));
-}
-.home-hero__plugin-hover-card strong {
-  display: block;
-  overflow: hidden;
-  color: var(--text-strong);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.home-hero__plugin-hover-card p {
-  margin: 3px 0 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.home-hero__plugin-hover-kicker {
-  display: block;
-  margin-bottom: 2px;
-  color: var(--text-faint);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-.home-hero__plugin-hover-meta {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  color: var(--text-faint);
-  font-size: 12px;
-}
-.home-hero__plugin-hover-meta span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.home-hero__plugin-hover-card button {
-  appearance: none;
-  padding: 6px 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-panel);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.home-hero__plugin-hover-card button:hover {
-  border-color: var(--border-strong);
-  color: var(--accent);
 }
 .home-hero__mention-tabs {
   flex: 0 0 auto;
