@@ -24,23 +24,23 @@ export interface DesignDeliveryInput {
   traceObjectFileCount: number;
   /** Authoritative artifact count reported by the daemon at run finalization. */
   artifactCount?: number;
+  /** Daemon-resolved working directory; excludes temporary verification files. */
+  projectRoot?: string | null;
   persistenceSucceeded?: boolean;
   persistenceFailed?: boolean;
 }
 
 /**
- * Delivery failures retain the agent-process `succeeded` status, but they are
- * terminal user-facing failures and must follow the same retry path as a
- * failed process run.
+ * Whether a turn failed, as the user is told it did: only when the run itself
+ * ended in error (P0-24). A delivery outcome (`no_result` / `delivery_failed`)
+ * describes the artifact, not the run — whether files were produced, saved or
+ * usable never changes the turn's status, so it no longer earns the failure
+ * card or its retry path.
  */
 export function isRetryableAssistantTerminalFailure(
-  message: Pick<ChatMessage, 'runStatus' | 'resultDeliveryState'>,
+  message: Pick<ChatMessage, 'runStatus'>,
 ): boolean {
-  return (
-    message.runStatus === 'failed' ||
-    message.resultDeliveryState === 'no_result' ||
-    message.resultDeliveryState === 'delivery_failed'
-  );
+  return message.runStatus === 'failed';
 }
 
 /**
@@ -104,7 +104,7 @@ export function resolveDesignDeliveryOutcome(
   }
   if (input.persistenceFailed) return 'delivery_failed';
   if (containsUnrenderableQuestionForm(input.content)) return 'no_result';
-  if (!hasFileMutationToolUse(input.events) && input.content.trim().length > 0) {
+  if (!hasFileMutationToolUse(input.events, { resolvedDir: input.projectRoot }) && input.content.trim().length > 0) {
     return 'report_only';
   }
   return 'no_result';
